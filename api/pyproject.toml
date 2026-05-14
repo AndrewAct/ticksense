@@ -1,0 +1,14 @@
+[project]
+name = "ticksense-api"
+version = "0.1.0"
+description = "FastAPI query layer over Trino + Iceberg"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.2",
+    "trino>=0.328.0",
+    "prometheus-client>=0.20.0",
+]

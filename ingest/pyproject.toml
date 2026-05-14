@@ -1,0 +1,12 @@
+[project]
+name = "ticksense-ingest"
+version = "0.1.0"
+description = "Binance L2 WebSocket ingestion into Kafka"
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13.0",
+    "aiokafka>=0.11.0",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "structlog>=24.2",
+]
