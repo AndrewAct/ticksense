@@ -266,6 +266,24 @@ Ideas:
 
 ---
 
+## Optional / Good to Have
+
+These are not on the critical path but worth revisiting as the ecosystem matures.
+
+### Migrate from mypy to ty
+
+[ty](https://github.com/astral-sh/ty) is Astral's Rust-based type checker — the third piece of the ruff/uv/ty trilogy, significantly faster than mypy.
+
+**Blocked by:** ty does not support mypy plugins. This project uses `plugins = ["pydantic.mypy"]` in `pyproject.toml`. Pydantic v2 has much better native type checker support than v1, so the plugin may be droppable once ty matures enough to cover the edge cases (e.g. `model_validator`, `TypeAdapter` generics under `strict = true`).
+
+**Migration steps (when ready):**
+1. Remove `plugins = ["pydantic.mypy"]` from `[tool.mypy]`
+2. Replace `mypy` with `ty` in the root dev dependency group
+3. Replace `uv run mypy ingest/src api/src replay/src` with `uv run ty check ingest/src api/src replay/src` in `Makefile` and `.github/workflows/ci.yml`
+4. Fix any new type errors surfaced by ty
+
+---
+
 ## Dependency graph
 
 ```
