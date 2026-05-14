@@ -14,9 +14,8 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
-    "testcontainers[redpanda,postgres]>=4.8",
+    "testcontainers[kafka,postgres]>=4.8",
     "httpx>=0.27",
-    "pydantic-mypy>=2.0",
 ]
 
 [tool.ruff]
