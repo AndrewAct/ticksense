@@ -78,7 +78,7 @@ ingest/src/ingest/
 
 ---
 
-## Phase 2 — Flink Processing
+## Phase 2 — Flink Processing 🚧 In Progress
 
 **Goal:** Normalized, deduplicated silver tables + OHLCV and liquidity metrics in real time.
 
@@ -86,27 +86,68 @@ ingest/src/ingest/
 
 **Job 1: `normalize.py`** — raw diffs → normalized book ticker
 
-- Source: `market.raw.orderbook` (Kafka)
-- Sink: `normalized.book_ticker` (Iceberg)
+- Source: `market.raw.orderbook` (Kafka, via DataStream `KafkaSource` + raw JSON — see bug #9 below)
+- Sink: `normalized.book_ticker` (Iceberg) + `market.normalized.book_ticker` (Kafka) + `market.dlq` (DLQ)
 - Dedup by `last_update_id`
 - Compute: best bid, best ask, spread, mid-price, top-5 imbalance
 - Late events (>30s) → `market.dlq`
 
 **Job 2: `ohlcv_1m.py`** — tumbling window aggregation
 
-- Source: `normalized.book_ticker`
-- Sink: `normalized.ohlcv_1m`
+- Source: `market.normalized.book_ticker` (Kafka, Table API)
+- Sink: `normalized.ohlcv_1m` (Iceberg)
 - Window: 1 minute, event time
 - Output: open, high, low, close, vwap, volume, trade_count
 
-**Deliverables:**
-- [ ] PyFlink job: normalize + dedup + spread/imbalance computation
-- [ ] PyFlink job: 1m OHLCV tumbling window
-- [ ] Iceberg tables: `normalized.book_ticker`, `normalized.ohlcv_1m`, `normalized.liquidity_metrics`
-- [ ] All jobs: checkpoint every 60s, restart strategy configured, DLQ side output
-- [ ] Flink UI (localhost:8081) shows running jobs with no restarts
-- [ ] Unit tests: window logic, dedup key generation, imbalance formula
-- [ ] `make test` passes
+### Implemented
+
+- [x] Custom Flink Docker image: multi-stage build (JDK headers graft + python3 + pemja + connector JARs)
+- [x] `flink/jobs/lib/config.py` — settings class with `as_dict()` for SQL template substitution
+- [x] `flink/jobs/lib/sql_runner.py` — SQL file runner: `load_sql`, `split_statements`, `execute_sql_file`, `add_inserts_from_file`
+- [x] `flink/jobs/lib/logic.py` — pure Python order book logic (no PyFlink, fully testable under Python 3.12)
+- [x] SQL files: `sql/catalogs.sql`, `sql/normalize/*.sql`, `sql/ohlcv_1m/*.sql`
+- [x] `normalize.py` — DataStream `KafkaSource` source + stateful `KeyedProcessFunction` + DataStream→Table bridge
+- [x] `ohlcv_1m.py` — pure Table API, tumbling window OHLCV
+- [x] Unit tests: 17 tests for `sql_runner`, 25+ tests for `logic`
+- [x] docker-compose: `flink-jobmanager`, `flink-taskmanager` (custom image), `flink-init` job submitter
+- [x] `normalize.py` job **RUNNING** in Flink (JobID: ef2f3875...) as of 2026-05-15
+
+### Deliverables Status
+
+- [x] PyFlink job: normalize + dedup + spread/imbalance computation
+- [x] PyFlink job: 1m OHLCV tumbling window (code complete, submission pending)
+- [x] Iceberg tables: DDL for `normalized.book_ticker`, `normalized.ohlcv_1m`
+- [x] All jobs: checkpoint every 60s, restart strategy configured, DLQ side output
+- [~] Flink UI (localhost:8081): `normalize` RUNNING — `ohlcv_1m` submission not yet confirmed
+- [x] Unit tests: sql_runner, logic
+- [ ] `make test` passes end-to-end
+- [ ] `normalized.ohlcv_1m` has rows for each symbol (need ingest running)
+
+### Bugs Encountered and Fixed (for reference)
+
+| # | Error | Root Cause | Fix |
+|---|---|---|---|
+| 1 | `cannot import name 'UTC' from 'datetime'` | `datetime.UTC` added in Python 3.11; Flink image has Python 3.10 | `from datetime import timezone; UTC = timezone.utc` |
+| 2 | `Cannot run program "python"` | Flink image only has `python3`, not `python` | `ln -s /usr/bin/python3 /usr/bin/python` in Dockerfile |
+| 3 | `cp flink-s3-fs-presto-1.18.0.jar: No such file` | Flink image is actually 1.18.**1**, not 1.18.0 | Use `flink-s3-fs-presto-*.jar` wildcard |
+| 4 | `cannot import name 'RestartStrategies' from 'pyflink.datastream'` | `RestartStrategies` is in `pyflink.common.restart_strategy`, not re-exported by `pyflink.datastream` | `from pyflink.common.restart_strategy import RestartStrategies` |
+| 5 | `TypeError: failure_rate_restart() got unexpected keyword argument 'delay_between_attempts'` | Actual kwarg is `delay_interval` in PyFlink 1.18 bundled version | Change kwarg name |
+| 6 | `SQL parse failed. Encountered "NOT" at line 4` | `CREATE CATALOG IF NOT EXISTS` not supported in Flink 1.18 (IF NOT EXISTS for CREATE CATALOG was added later) | Remove `IF NOT EXISTS` — catalog is session-scoped and always created fresh |
+| 7 | `ClassNotFoundException: org.apache.hadoop.conf.Configuration` | Iceberg's `FlinkCatalogFactory` always calls `clusterHadoopConf()` which needs `hadoop-common`, not included in base Flink image | Add `flink-shaded-hadoop-2-uber-2.8.3-10.0.jar` to Dockerfile |
+| 8 | `Non-query expression encountered in illegal context` (sink_iceberg.sql) | `split_statements()` naively split on `;`, including semicolons inside `--` comments (line 6 of sink_iceberg.sql has `; add DAY(...)`) | Rewrote `split_statements` as proper character-level parser: skips `;` inside `--` line comments, `/* */` block comments, and string literals |
+| 9 | `LegacyTypeInformationType cannot be cast to ArrayType` | `to_data_stream()` on a table with `ARRAY<ARRAY<STRING>>` columns (bids/asks) fails in PyFlink 1.18 — these map to `LegacyTypeInformationType` which can't be serialized through the DataStream bridge | Replaced Table API source + `to_data_stream()` with DataStream `KafkaSource` + `SimpleStringSchema`. `OrderBookProcessor` now parses raw JSON strings. `source.sql` kept for documentation but no longer executed. |
+
+### Known Limitations / TODO for Next Session
+
+1. **kafka_partition and kafka_offset are hardcoded to `-1`** in normalize output — `SimpleStringSchema` doesn't expose Kafka record metadata. To fix properly: implement a custom `KafkaRecordDeserializationSchema` in Java or use a different source approach.
+
+2. **`ohlcv_1m.py` submission status unknown** — was being submitted when session ended. Need to verify it started successfully in Flink UI at localhost:8081. If it failed, need to check logs with `docker compose logs flink-init`.
+
+3. **Need ingest service running** to actually produce data through the pipeline and verify `normalized.ohlcv_1m` gets rows.
+
+4. **`source.sql` no longer used by `normalize.py`** — kept as documentation of the raw orderbook schema, but not executed at runtime. Consider adding a comment to the file noting this.
+
+5. **`pyproject.toml` workspace members** — `flink/` is NOT a uv workspace member (PyFlink runs under Python 3.10 in Docker, the uv workspace uses Python 3.12). Verify `members = ["ingest", "api", "replay"]` — `"flink"` should NOT be present.
 
 **Done when:** 5 minutes after `make up`, `normalized.ohlcv_1m` has rows for each symbol.
 
@@ -263,6 +304,24 @@ Ideas:
 - LLM-powered signal commentary ("BTC spread widened 3x in the last 5 minutes — large sell wall appeared at $67,200")
 - RAG over blog posts + financial news for context
 - Real-time alerts via Telegram / WeChat
+
+---
+
+## Optional / Good to Have
+
+These are not on the critical path but worth revisiting as the ecosystem matures.
+
+### Migrate from mypy to ty
+
+[ty](https://github.com/astral-sh/ty) is Astral's Rust-based type checker — the third piece of the ruff/uv/ty trilogy, significantly faster than mypy.
+
+**Blocked by:** ty does not support mypy plugins. This project uses `plugins = ["pydantic.mypy"]` in `pyproject.toml`. Pydantic v2 has much better native type checker support than v1, so the plugin may be droppable once ty matures enough to cover the edge cases (e.g. `model_validator`, `TypeAdapter` generics under `strict = true`).
+
+**Migration steps (when ready):**
+1. Remove `plugins = ["pydantic.mypy"]` from `[tool.mypy]`
+2. Replace `mypy` with `ty` in the root dev dependency group
+3. Replace `uv run mypy ingest/src api/src replay/src` with `uv run ty check ingest/src api/src replay/src` in `Makefile` and `.github/workflows/ci.yml`
+4. Fix any new type errors surfaced by ty
 
 ---
 

@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 
 import structlog
@@ -41,12 +42,16 @@ async def _run() -> None:
             for sym in settings.ingest_symbols
         ]
         await asyncio.gather(*[c.run() for c in clients])
+    except asyncio.CancelledError:
+        log.info("ingest_stopping")
     finally:
         await producer.stop()
+        log.info("ingest_stopped")
 
 
 def main() -> None:
-    asyncio.run(_run())
+    with contextlib.suppress(KeyboardInterrupt):
+        asyncio.run(_run())
 
 
 if __name__ == "__main__":

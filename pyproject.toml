@@ -26,6 +26,9 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 ignore = ["N818"]
 
+[tool.ruff.lint.per-file-ignores]
+"flink/**" = ["UP017"]  # datetime.UTC requires Python 3.11+; flink container runs 3.10
+
 [tool.ruff.lint.isort]
 known-first-party = ["ingest", "api", "replay"]
 
@@ -37,11 +40,11 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["ingest/tests", "api/tests", "replay/tests"]
+testpaths = ["ingest/tests", "api/tests", "replay/tests", "flink/tests"]
 addopts = "--tb=short"
 
 [tool.coverage.run]
-source = ["ingest/src", "api/src", "replay/src"]
+source = ["ingest/src", "api/src", "replay/src", "flink/jobs/lib"]
 omit = ["*/tests/*"]
 
 [tool.coverage.report]

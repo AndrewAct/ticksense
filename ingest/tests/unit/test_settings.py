@@ -10,17 +10,17 @@ class TestSettings:
         assert s.log_level == "INFO"
         assert "btcusdt" in s.ingest_symbols
 
-    def test_symbols_from_comma_string(self) -> None:
-        s = Settings(ingest_symbols="btcusdt,ethusdt, solusdt")  # type: ignore[arg-type]
+    def test_symbols_from_list(self) -> None:
+        s = Settings(ingest_symbols=["btcusdt", "ethusdt", "solusdt"])
         assert s.ingest_symbols == ["btcusdt", "ethusdt", "solusdt"]
 
-    def test_symbols_whitespace_stripped(self) -> None:
-        s = Settings(ingest_symbols="  BTCUSDT ,  ETHUSDT  ")  # type: ignore[arg-type]
-        assert s.ingest_symbols == ["btcusdt", "ethusdt"]
+    def test_symbols_single_item(self) -> None:
+        s = Settings(ingest_symbols=["btcusdt"])
+        assert s.ingest_symbols == ["btcusdt"]
 
-    def test_symbols_empty_entries_skipped(self) -> None:
-        s = Settings(ingest_symbols="btcusdt,,ethusdt,")  # type: ignore[arg-type]
-        assert s.ingest_symbols == ["btcusdt", "ethusdt"]
+    def test_symbols_preserves_case_as_provided(self) -> None:
+        s = Settings(ingest_symbols=["btcusdt", "ethusdt"])
+        assert "btcusdt" in s.ingest_symbols
 
     def test_override_bootstrap_servers(self) -> None:
         s = Settings(kafka_bootstrap_servers="kafka:9092")

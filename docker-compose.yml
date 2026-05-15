@@ -55,8 +55,9 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        rpk topic create market.raw.orderbook --brokers redpanda:9092 --partitions 10 --replicas 1 || true
-        rpk topic create market.dlq --brokers redpanda:9092 --partitions 2 --replicas 1 || true
+        rpk topic create market.raw.orderbook         --brokers redpanda:9092 --partitions 10 --replicas 1 || true
+        rpk topic create market.normalized.book_ticker --brokers redpanda:9092 --partitions 10 --replicas 1 || true
+        rpk topic create market.dlq                   --brokers redpanda:9092 --partitions 2  --replicas 1 || true
     restart: "no"
 
   # ── Postgres ─────────────────────────────────────────────────────────────────
@@ -167,9 +168,12 @@ services:
   # ── Flink ────────────────────────────────────────────────────────────────────
 
   flink-jobmanager:
-    image: flink:1.18-scala_2.12-java11
+    build: ./flink
     command: jobmanager
     environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 4
@@ -179,6 +183,7 @@ services:
         s3.secret-key: minioadmin
         s3.endpoint: http://minio:9000
         s3.path.style.access: true
+        python.executable: python3
     depends_on:
       minio:
         condition: service_healthy
@@ -195,9 +200,12 @@ services:
     restart: unless-stopped
 
   flink-taskmanager:
-    image: flink:1.18-scala_2.12-java11
+    build: ./flink
     command: taskmanager
     environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
       FLINK_PROPERTIES: |
         jobmanager.rpc.address: flink-jobmanager
         taskmanager.numberOfTaskSlots: 4
@@ -207,11 +215,63 @@ services:
         s3.secret-key: minioadmin
         s3.endpoint: http://minio:9000
         s3.path.style.access: true
+        python.executable: python3
     depends_on:
       flink-jobmanager:
         condition: service_healthy
     volumes:
       - flink-data:/tmp/flink
+    restart: unless-stopped
+
+  flink-init:
+    build: ./flink
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_healthy
+      redpanda-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      ICEBERG_REST_URI: http://iceberg-rest:8181
+      ICEBERG_WAREHOUSE: s3://ticksense/warehouse
+      S3_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_REGION: us-east-1
+      PYTHONPATH: /opt/flink/jobs
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "=== Submitting normalize job ===" && \
+        /opt/flink/bin/flink run --detached \
+          --jobmanager flink-jobmanager:8081 \
+          --python /opt/flink/jobs/normalize.py && \
+        echo "=== Submitting ohlcv_1m job ===" && \
+        /opt/flink/bin/flink run --detached \
+          --jobmanager flink-jobmanager:8081 \
+          --python /opt/flink/jobs/ohlcv_1m.py && \
+        echo "=== All Flink jobs submitted ==="
+    restart: "no"
+
+  # ── Ingest service ───────────────────────────────────────────────────────────
+
+  ingest:
+    build:
+      context: .
+      dockerfile: ingest/Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      KAFKA_SECURITY_PROTOCOL: PLAINTEXT
+      BINANCE_WS_BASE_URL: wss://stream.binance.us:9443/ws
+      BINANCE_REST_BASE_URL: https://api.binance.us
+      INGEST_SYMBOLS: '["btcusdt","ethusdt","solusdt","bnbusdt","xrpusdt"]'
+      LOG_LEVEL: INFO
+      ENV: docker
+    depends_on:
+      redpanda-init:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
