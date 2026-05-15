@@ -288,6 +288,12 @@ Then point your IDE at `flink/.venv/bin/python`:
 
 ---
 
+### Before commit 
+
+* Run `make lint typecheck test coverage` to ensure tests have passed
+
+---
+
 ## Project layout
 
 ```
