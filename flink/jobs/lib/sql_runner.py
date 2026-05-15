@@ -95,9 +95,7 @@ def split_statements(sql: str) -> list[str]:
 
     # trailing statement without semicolon
     stmt = "".join(buf).strip()
-    non_comment = [
-        ln for ln in stmt.splitlines() if ln.strip() and not ln.strip().startswith("--")
-    ]
+    non_comment = [ln for ln in stmt.splitlines() if ln.strip() and not ln.strip().startswith("--")]
     if non_comment:
         stmts.append(stmt)
 
