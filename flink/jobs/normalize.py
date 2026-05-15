@@ -26,11 +26,10 @@ DataStream→Table bridge, and calls to sql_runner helpers.
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
-from typing import Any
-
-UTC = timezone.utc
 from pathlib import Path
+from typing import Any
 
 from lib.config import Config
 from lib.logic import (
@@ -43,9 +42,9 @@ from lib.logic import (
 )
 from lib.sql_runner import add_inserts_from_file, execute_sql_file
 from pyflink.common import Row, WatermarkStrategy
+from pyflink.common.restart_strategy import RestartStrategies
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
-from pyflink.common.restart_strategy import RestartStrategies
 from pyflink.datastream import (
     CheckpointingMode,
     StreamExecutionEnvironment,
@@ -58,7 +57,7 @@ from pyflink.datastream.functions import KeyedProcessFunction, RuntimeContext
 from pyflink.datastream.state import ValueStateDescriptor
 from pyflink.table import DataTypes, Schema, StreamTableEnvironment
 
-import logging
+UTC = timezone.utc
 log = logging.getLogger(__name__)
 
 SQL = Path(__file__).parent / "sql"
@@ -170,7 +169,9 @@ class OrderBookProcessor(KeyedProcessFunction):
         # ── 2. Late-event routing ─────────────────────────────────────────────
         # PyFlink 1.18 Python bindings don't support ctx.output() side outputs.
         # Late events are logged and dropped instead of routed to market.dlq.
-        exchange_event_ts_ms = _to_epoch_ms(msg.get("exchange_event_ts") or msg.get("event_time", ""))
+        exchange_event_ts_ms = _to_epoch_ms(
+            msg.get("exchange_event_ts") or msg.get("event_time", "")
+        )
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
         lag_s = (now_ms - exchange_event_ts_ms) / 1000.0
         if lag_s > Config.LATE_THRESHOLD_SECONDS:

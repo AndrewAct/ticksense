@@ -26,6 +26,9 @@ line-length = 100
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
 ignore = ["N818"]
 
+[tool.ruff.lint.per-file-ignores]
+"flink/**" = ["UP017"]  # datetime.UTC requires Python 3.11+; flink container runs 3.10
+
 [tool.ruff.lint.isort]
 known-first-party = ["ingest", "api", "replay"]
 

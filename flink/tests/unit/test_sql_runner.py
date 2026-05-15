@@ -70,7 +70,10 @@ class TestSplitStatements:
 
     def test_semicolon_in_line_comment_not_a_split(self) -> None:
         # semicolons inside -- comments must not split the statement
-        sql = "-- use DAY(ts) when row counts justify it; add partition later\nCREATE TABLE foo (id BIGINT)"
+        sql = (
+            "-- use DAY(ts) when row counts justify it; add partition later\n"
+            "CREATE TABLE foo (id BIGINT)"
+        )
         stmts = split_statements(sql)
         assert len(stmts) == 1
         assert "CREATE TABLE foo" in stmts[0]

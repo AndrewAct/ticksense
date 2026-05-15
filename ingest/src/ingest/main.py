@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 
 import structlog
@@ -49,10 +50,8 @@ async def _run() -> None:
 
 
 def main() -> None:
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(_run())
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":
