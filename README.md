@@ -32,47 +32,120 @@ Binance WebSocket (L2 order book)
 
 ---
 
-## Quick start
+## Getting started
+
+### Prerequisites
+
+| Tool | Version | Purpose |
+|---|---|---|
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) | ≥ 4.x | All infrastructure services |
+| [uv](https://docs.astral.sh/uv/getting-started/installation/) | ≥ 0.5 | Python package manager for the main workspace |
+| Python 3.12 | exactly 3.12 | Main workspace (ingest, api, replay) |
+| Python 3.10 | exactly 3.10 | Flink IDE venv only (must be on PATH as `python3.10`) |
+
+Install uv:
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Install Python versions via [pyenv](https://github.com/pyenv/pyenv) or [python.org](https://www.python.org/downloads/):
+```bash
+pyenv install 3.12 3.10   # if using pyenv
+```
+
+---
+
+### Step 1 — create the main Python environment
+
+```bash
+uv sync --all-packages   # creates .venv with Python 3.12 and installs all workspace members
+```
+
+This installs `ingest`, `api`, `replay` and all their dependencies. The `--all-packages` flag is required — plain `uv sync` only resolves the root package and leaves workspace members uninstalled. All `uv run` / `make lint|test|typecheck` commands use this venv automatically.
+
+---
+
+### Step 2 — configure environment variables
 
 ```bash
 cp .env.example .env
-make up        # pull images, start all services, wait for healthchecks
-make test      # run all unit + integration tests
 ```
 
-First boot pulls ~3 GB of images; subsequent `make up` takes ~30s.
+The defaults in `.env.example` work out-of-the-box for local development (MinIO, Redpanda, Postgres all use the Docker-compose credentials). No API keys are required — Binance public WebSocket data is used.
 
 ---
 
-## Local stack — service UIs
-
-Once `make up` succeeds, every service is reachable from your browser or CLI:
-
-| Service | URL | What you'll see |
-|---|---|---|
-| Redpanda Console | http://localhost:8080 | Topics, consumer groups, message browser |
-| MinIO Console | http://localhost:9001 | Object store — `ticksense/warehouse/` holds Iceberg data files |
-| Flink UI | http://localhost:8081 | Running jobs, task managers, checkpoints, exceptions |
-| Trino UI | http://localhost:8082 | Query history, cluster overview |
-| Iceberg REST | http://localhost:8181/v1/config | Catalog config (JSON) |
-
-MinIO login: `minioadmin` / `minioadmin`
-
----
-
-## Starting ingestion
-
-The `ingest` service streams Binance L2 order book diffs over WebSocket and produces to Redpanda. It runs outside Docker (pure Python).
+### Step 3 — start the infrastructure stack
 
 ```bash
-# Start ingesting (default symbols from .env: btcusdt,ethusdt,solusdt,bnbusdt,xrpusdt)
-uv run python -m ingest.main
+make up
+```
 
-# Override symbols for a quick test
+Pulls and starts: Redpanda, MinIO, Iceberg REST, Trino, Postgres, Flink (jobmanager + taskmanager). Also submits both Flink jobs automatically via `flink-init`.
+
+First boot pulls ~3 GB of images and takes a few minutes. Subsequent `make up` takes ~30s.
+
+Once healthy, services are available at:
+
+| Service | URL |
+|---|---|
+| Redpanda Console | http://localhost:8080 |
+| MinIO Console | http://localhost:9001 (minioadmin / minioadmin) |
+| Flink UI | http://localhost:8081 |
+| Trino UI | http://localhost:8082 |
+| Iceberg REST | http://localhost:8181/v1/config |
+
+---
+
+### Step 4 — create the Flink IDE venv (optional, for IDE navigation)
+
+`flink/` is not part of the uv workspace because `apache-flink` cannot be built from
+source with current pip/setuptools versions. Without this step, your IDE cannot resolve
+`pyflink` imports. The venv copies pyflink directly from the running container:
+
+```bash
+make flink-venv   # requires: make up has already been run
+```
+
+Then point your IDE at `flink/.venv/bin/python`:
+
+- **VS Code**: `Cmd+Shift+P` → `Python: Select Interpreter` → `./flink/.venv/bin/python`
+- **PyCharm**: `Settings → Project → Python Interpreter → Add → Existing → flink/.venv/bin/python`
+
+Re-run `make flink-venv` after `make build` if the Flink image is rebuilt.
+
+---
+
+### Step 5 — start ingestion
+
+The ingest service runs outside Docker (pure Python, no container needed):
+
+```bash
+uv run python -m ingest.main
+```
+
+This opens a WebSocket to Binance and streams L2 order book events into Redpanda. Stop with `Ctrl+C` — the producer flushes before exit.
+
+Override symbols for a quick test:
+```bash
 INGEST_SYMBOLS=btcusdt uv run python -m ingest.main
 ```
 
-Stop with `Ctrl+C` — the producer flushes before exit.
+---
+
+### Verify everything is flowing
+
+```bash
+# Flink: both jobs should show RUNNING
+curl -s http://localhost:8081/jobs/overview | python3 -m json.tool
+
+# Redpanda: messages arriving
+docker compose exec redpanda rpk topic consume market.raw.orderbook \
+  --brokers localhost:9092 --num 5
+
+# Run all tests
+make test
+```
 
 ---
 
@@ -186,6 +259,32 @@ make build          # docker compose build --no-cache
 uv run pytest ingest/tests/unit -v
 uv run pytest --ignore=ingest/tests/integration -q
 ```
+
+### Flink IDE setup
+
+`flink/` is **not** part of the uv workspace because `apache-flink` cannot be built
+from source with current pip/setuptools versions. Without a local pyflink install, your
+IDE cannot resolve `pyflink` imports — go-to-definition and type hints will be broken.
+
+The fix is a separate Python 3.10 venv (matching the container's runtime) that gets
+pyflink copied directly from the running `flink-jobmanager` container, bypassing the
+broken pip build entirely:
+
+```bash
+make up          # stack must be running first
+make flink-venv  # creates flink/.venv with pyflink + py4j + cloudpickle
+```
+
+Then point your IDE at `flink/.venv/bin/python`:
+
+- **VS Code**: `Cmd+Shift+P` → `Python: Select Interpreter` → choose
+  `./flink/.venv/bin/python`
+- **PyCharm**: `Settings → Project → Python Interpreter → Add → Existing
+  → flink/.venv/bin/python`
+
+`flink/.venv` is covered by the existing `.venv/` rule in `.gitignore` — it is never committed.
+
+> Re-run `make flink-venv` after `make build` if the Flink image is rebuilt.
 
 ---
 

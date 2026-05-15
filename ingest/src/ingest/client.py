@@ -1,7 +1,9 @@
 import asyncio
 import json
+import ssl
 from datetime import UTC, datetime
 
+import certifi
 import httpx
 import structlog
 import websockets
@@ -58,7 +60,8 @@ class BinanceOrderBookClient:
         url = f"{self._settings.binance_ws_base_url}/{self._symbol}@depth"
         log.info("ws_connecting", symbol=self._symbol)
 
-        async with websockets.connect(url) as ws:
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        async with websockets.connect(url, ssl=ssl_ctx) as ws:
             book = OrderBook(symbol=self._symbol)
             await self._initialize_book(ws, book)
 

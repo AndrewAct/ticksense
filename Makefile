@@ -1,5 +1,6 @@
 .PHONY: up down restart logs lint format typecheck test coverage \
-        build dbt-compile dbt-run dbt-test replay-sample help
+        build flink-submit flink-logs flink-venv ingest ingest-logs \
+        dbt-compile dbt-run dbt-test replay-sample help
 
 # ── Local stack ──────────────────────────────────────────────────────────────
 
@@ -54,6 +55,31 @@ replay-sample:
 
 build:
 	docker compose build --no-cache
+
+# ── Ingest ────────────────────────────────────────────────────────────────────
+
+ingest:
+	uv run python -m ingest.main
+
+ingest-logs:
+	docker compose logs -f ingest
+
+# ── Flink ─────────────────────────────────────────────────────────────────────
+
+flink-submit:
+	docker compose run --rm flink-init
+
+flink-logs:
+	docker compose logs -f flink-jobmanager flink-taskmanager flink-init
+
+flink-venv:
+	@echo "Requires: make up (flink-jobmanager must be running)"
+	python3.10 -m venv flink/.venv
+	docker compose cp flink-jobmanager:/usr/local/lib/python3.10/dist-packages/pyflink \
+	  flink/.venv/lib/python3.10/site-packages/pyflink
+	flink/.venv/bin/pip install --upgrade pip --quiet
+	flink/.venv/bin/pip install "py4j==0.10.9.7" "cloudpickle==2.2.1" "python-dateutil>=2.8.0" --quiet
+	@echo "flink/.venv ready — select flink/.venv/bin/python as interpreter in your IDE"
 
 help:
 	@grep -E '^[a-zA-Z_-]+:' Makefile | awk -F: '{printf "  %-20s\n", $$1}'
