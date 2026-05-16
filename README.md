@@ -40,7 +40,7 @@ Binance WebSocket (L2 order book)
 |---|---|---|
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) | ≥ 4.x | All infrastructure services |
 | [uv](https://docs.astral.sh/uv/getting-started/installation/) | ≥ 0.5 | Python package manager for the main workspace |
-| Python 3.12 | exactly 3.12 | Main workspace (ingest, api, replay) |
+| Python ≥3.12 | 3.13 recommended (Homebrew) | Main workspace (ingest, api, replay) |
 | Python 3.10 | exactly 3.10 | Flink IDE venv only (must be on PATH as `python3.10`) |
 
 Install uv:
@@ -50,7 +50,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 Install Python versions via [pyenv](https://github.com/pyenv/pyenv) or [python.org](https://www.python.org/downloads/):
 ```bash
-pyenv install 3.12 3.10   # if using pyenv
+pyenv install 3.13 3.10   # if using pyenv
 ```
 
 ---
@@ -250,6 +250,7 @@ make dbt-compile    # compile dbt models
 make dbt-run        # run dbt models
 make dbt-test       # run dbt tests
 make replay-sample  # replay 10k events dry-run
+make watch-cdc      # tail postgres.public.symbol_config topic live
 make build          # docker compose build --no-cache
 ```
 
@@ -327,7 +328,7 @@ docs/      ROADMAP.md
 
 | Layer | Technology |
 |---|---|
-| Ingestion | Python 3.12, websockets, aiokafka, httpx |
+| Ingestion | Python 3.13, websockets, aiokafka, httpx |
 | Broker | Redpanda v24.3 (Kafka-compatible, no ZooKeeper) |
 | Processing | PyFlink 1.18 |
 | Storage | Apache Iceberg 1.6 on MinIO (local) / GCS (cloud) |
@@ -350,8 +351,8 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full phase plan.
 |---|---|---|
 | 0 — Scaffolding | ✅ | CLAUDE.md, skills, uv workspace, CI, Makefile |
 | 1 — Local Stack + Ingest | ✅ | docker-compose, Binance WS → Kafka (57 tests, 96% cov) |
-| 2 — Flink Processing | ⏳ | Normalize, dedup, OHLCV windows → Iceberg silver |
-| 3 — CDC + Replay | — | Debezium, replay producer |
+| 2 — Flink Processing | ✅ | Normalize, dedup, OHLCV windows → Iceberg silver (e2e verified 2026-05-15) |
+| 3 — CDC + Replay | ✅ | Debezium CDC, Flink upsert job, replay CLI (e2e verified 2026-05-16) |
 | 4 — Analytics Layer | — | dbt models, FastAPI |
 | 5 — Ops + Observability | — | Airflow, Great Expectations, SLA alerts |
 | 6 — Demo + Blog + Web | — | ticksense.ai, demo video, blog posts |
