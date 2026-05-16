@@ -12,4 +12,5 @@ CREATE CATALOG iceberg_cat WITH (
     's3.path-style-access'  = 'true'
 );
 
+CREATE DATABASE IF NOT EXISTS iceberg_cat.bronze;
 CREATE DATABASE IF NOT EXISTS iceberg_cat.normalized

@@ -55,9 +55,11 @@ services:
     entrypoint: ["/bin/bash", "-c"]
     command:
       - |
-        rpk topic create market.raw.orderbook         --brokers redpanda:9092 --partitions 10 --replicas 1 || true
+        rpk topic create market.raw.orderbook          --brokers redpanda:9092 --partitions 10 --replicas 1 || true
         rpk topic create market.normalized.book_ticker --brokers redpanda:9092 --partitions 10 --replicas 1 || true
-        rpk topic create market.dlq                   --brokers redpanda:9092 --partitions 2  --replicas 1 || true
+        rpk topic create market.agg.ohlcv_1m           --brokers redpanda:9092 --partitions 4  --replicas 1 || true
+        rpk topic create market.dlq                    --brokers redpanda:9092 --partitions 2  --replicas 1 || true
+        rpk topic create postgres.public.symbol_config --brokers redpanda:9092 --partitions 1  --replicas 1 || true
     restart: "no"
 
   # ── Postgres ─────────────────────────────────────────────────────────────────
@@ -84,6 +86,26 @@ services:
       retries: 10
       start_period: 10s
     restart: unless-stopped
+
+  # ── Postgres init (schema + seed data) ───────────────────────────────────────
+
+  postgres-init:
+    image: postgres:16
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: changeme
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "=== Initializing symbol_config table ===" && \
+        psql -h postgres -U ticksense -d ticksense \
+             -f /docker-entrypoint-initdb.d/init.sql && \
+        echo "=== Postgres init complete ==="
+    volumes:
+      - ./infra/docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    restart: "no"
 
   # ── MinIO (S3-compatible object store) ───────────────────────────────────────
 
@@ -232,6 +254,8 @@ services:
         condition: service_healthy
       redpanda-init:
         condition: service_completed_successfully
+      debezium-init:
+        condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       ICEBERG_REST_URI: http://iceberg-rest:8181
@@ -252,7 +276,78 @@ services:
         /opt/flink/bin/flink run --detached \
           --jobmanager flink-jobmanager:8081 \
           --python /opt/flink/jobs/ohlcv_1m.py && \
+        echo "=== Submitting cdc_symbol_config job ===" && \
+        /opt/flink/bin/flink run --detached \
+          --jobmanager flink-jobmanager:8081 \
+          --python /opt/flink/jobs/cdc_symbol_config.py && \
         echo "=== All Flink jobs submitted ==="
+    restart: "no"
+
+  # ── Debezium (Postgres CDC → Kafka) ──────────────────────────────────────────
+  #
+  # Debezium reads Postgres WAL via logical replication (pgoutput plugin, built-in
+  # since Postgres 10).  Each committed INSERT/UPDATE/DELETE on symbol_config is
+  # emitted as a CDC event to kafka topic: postgres.public.symbol_config
+  #
+  # Envelope format (schemas.enable=false):
+  #   { "before": {…|null}, "after": {…|null},
+  #     "source": {"lsn": int, "ts_ms": long, "txId": int, …},
+  #     "op": "r"|"c"|"u"|"d", "ts_ms": long }
+  #
+  # op codes:  r=snapshot read, c=create, u=update, d=delete
+  # tombstones.on.delete=false — null-value tombstone messages are suppressed;
+  #   the preceding d event already captures the pre-delete row state.
+
+  debezium:
+    image: debezium/connect:2.6
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      postgres-init:
+        condition: service_completed_successfully
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: debezium-connect-group
+      CONFIG_STORAGE_TOPIC: debezium.configs
+      OFFSET_STORAGE_TOPIC: debezium.offsets
+      STATUS_STORAGE_TOPIC: debezium.status
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+    ports:
+      - "8083:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+  debezium-init:
+    image: curlimages/curl:8.11.1
+    depends_on:
+      debezium:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "=== Registering Debezium connector (idempotent) ===" && \
+        if curl -sf http://debezium:8083/connectors/ticksense-symbol-config > /dev/null 2>&1; then
+          echo "Connector already exists, skipping registration"
+        else
+          curl -sf -X POST http://debezium:8083/connectors \
+            -H "Content-Type: application/json" \
+            -d @/config/connector.json && \
+          echo ""
+        fi && \
+        echo "=== Connector status ===" && \
+        sleep 3 && \
+        curl -sf http://debezium:8083/connectors/ticksense-symbol-config/status
+    volumes:
+      - ./infra/config/debezium/connector.json:/config/connector.json:ro
     restart: "no"
 
   # ── Ingest service ───────────────────────────────────────────────────────────

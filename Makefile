@@ -1,6 +1,6 @@
 .PHONY: up down restart logs lint format typecheck test coverage \
         build flink-submit flink-logs flink-venv ingest ingest-logs \
-        dbt-compile dbt-run dbt-test replay-sample help
+        dbt-compile dbt-run dbt-test replay-sample watch-cdc help
 
 # ── Local stack ──────────────────────────────────────────────────────────────
 
@@ -15,6 +15,16 @@ restart:
 
 logs:
 	docker compose logs -f
+
+watch-cdc:
+	@echo "Watching normalized.symbol_config — Ctrl+C to stop"; \
+	while true; do \
+		printf "\n\033[1m$$(date -u '+%H:%M:%S UTC')\033[0m\n"; \
+		docker compose exec -T trino trino --execute \
+			"SELECT symbol, status, exchange FROM iceberg.normalized.symbol_config ORDER BY symbol" \
+			2>/dev/null || echo "(table not yet available — waiting for first checkpoint)"; \
+		sleep 10; \
+	done
 
 # ── Code quality ─────────────────────────────────────────────────────────────
 
