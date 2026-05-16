@@ -7,7 +7,7 @@ Target: ~5M ticks/day, 50 pairs, <30s end-to-end freshness.
 
 | Layer | Technology |
 |---|---|
-| Ingestion | Python 3.12, websockets, aiokafka |
+| Ingestion | Python 3.13, websockets, aiokafka |
 | Broker | Redpanda (Kafka-compatible) |
 | Processing | PyFlink |
 | Storage | Apache Iceberg on MinIO (local) / GCS (cloud) |

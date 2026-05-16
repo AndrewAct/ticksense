@@ -33,7 +33,7 @@ ignore = ["N818"]
 known-first-party = ["ingest", "api", "replay"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 ignore_missing_imports = true
 plugins = ["pydantic.mypy"]
