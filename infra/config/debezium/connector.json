@@ -1,0 +1,34 @@
+{
+  "name": "ticksense-symbol-config",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "ticksense",
+    "database.password": "changeme",
+    "database.dbname": "ticksense",
+
+    "topic.prefix": "postgres",
+    "table.include.list": "public.symbol_config",
+
+    "plugin.name": "pgoutput",
+    "publication.autocreate.mode": "filtered",
+    "slot.name": "ticksense_debezium",
+
+    "snapshot.mode": "initial",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+
+    "decimal.handling.mode": "double",
+    "time.precision.mode": "connect",
+
+    "tombstones.on.delete": "false",
+
+    "heartbeat.interval.ms": "10000",
+    "heartbeat.topics.prefix": "__debezium_heartbeat"
+  }
+}
