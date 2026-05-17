@@ -185,40 +185,57 @@ replay/src/replay/
 
 ---
 
-## Phase 4 — Analytics Layer
+## Phase 4 — Analytics Layer ✅
 
-**Goal:** dbt models queryable via Trino; FastAPI serving OHLCV and liquidity endpoints.
+**Goal:** dbt models queryable via Trino; FastAPI serving OHLCV and liquidity endpoints; Prometheus + Grafana monitoring.
 
-### dbt models
+**Done:** Full stack e2e verified 2026-05-16. All 5 API endpoints return live Binance data. Grafana dashboard showing real-time prices, spreads, imbalance, and pipeline health. See `docs/DEBUGGING_PHASE4.md` for all gotchas.
+
+### dbt models (9 models, PASS=6 in docker-compose)
 
 ```
-staging:    stg_orderbook_diffs, stg_book_ticker, stg_symbol_config
-intermediate: int_ohlcv_1m, int_spread_metrics, int_order_book_imbalance,
-              int_liquidity_score, int_freshness_status
-marts:      mart_ohlcv, mart_liquidity, mart_volatility, mart_exchange_health
+staging (view):      stg_book_ticker, stg_ohlcv_1m, stg_symbol_config
+intermediate (ephem): int_spread_metrics, int_order_book_imbalance, int_freshness_status
+marts:               mart_ohlcv (table), mart_liquidity (view), mart_exchange_health (view)
 ```
+
+Views recalculate `current_timestamp` on every Trino query → always fresh liquidity/health data without re-running dbt.
 
 ### FastAPI endpoints
 
 ```
-GET /health
-GET /ready
-GET /metrics
-GET /v1/ohlcv?symbol=BTCUSDT&interval=1m&limit=100
-GET /v1/liquidity?symbol=BTCUSDT
-GET /v1/symbols
-GET /v1/freshness
+GET /health                  liveness check
+GET /ready                   readiness check (pings Trino)
+GET /metrics                 Prometheus scrape endpoint
+GET /ohlcv/{symbol}          1m OHLCV bars (last 60 by default, filterable by ts range)
+GET /spread/{symbol}         best bid/ask, spread in bps
+GET /liquidity/{symbol}      spread + imbalance + market signal + freshness
+GET /pipeline/lag            health score + staleness for all 5 pairs
+GET /symbols                 active trading pairs from CDC symbol_config
 ```
 
-**Deliverables:**
-- [ ] 12 dbt models with schema.yml tests and source freshness
-- [ ] `make dbt-run && make dbt-test` passes
-- [ ] FastAPI service with Pydantic request/response models on every endpoint
-- [ ] `/health`, `/ready`, `/metrics` on FastAPI
-- [ ] Integration tests: FastAPI → Trino → Iceberg round-trip
-- [ ] `make test` passes
+### Monitoring stack
 
-**Done when:** `curl localhost:8000/v1/ohlcv?symbol=BTCUSDT&interval=1m` returns data.
+- **Background poller**: FastAPI lifespan task queries Trino every 30s, updates Prometheus Gauges
+- **Business metrics**: `market_mid_price_usd`, `market_spread_bps`, `market_bid_ask_imbalance`, `market_staleness_seconds`, `pipeline_health_score` — all labeled by `{symbol, exchange}`
+- **Grafana dashboard**: 17 panels across 3 sections — API ops, Live Market Prices, Pipeline Health
+
+### Key design decisions
+
+**Freshness threshold: 60s not 30s** — Flink writes to Iceberg at checkpoint boundaries (~30–60s interval), not per-event. The data visible to Trino is always one checkpoint behind. Targeting `staleness ≤ 30s = FRESH` would cause health_score to oscillate 1.0↔0.5 every checkpoint cycle. The correct threshold is `≤ 60s` (one full checkpoint interval). See `docs/DEBUGGING_PHASE4.md`.
+
+**Deliverables:**
+- [x] 9 dbt models with `schema.yml` tests and source freshness
+- [x] `dbt run` fully automated in docker-compose (`dbt-runner` waits for Flink schema then runs)
+- [x] FastAPI with Pydantic request/response models on every endpoint
+- [x] 21 integration tests, 91% coverage, mypy strict + ruff all pass
+- [x] Prometheus middleware: `api_requests_total`, `api_request_duration_seconds`
+- [x] Background market poller: 5 business Prometheus metrics updated every 30s
+- [x] Grafana: 17-panel dashboard provisioned via config file (no manual setup)
+- [x] `api/Dockerfile`: `python:3.13-slim` + curl installed for healthcheck
+- [x] `docs/MARKET_CONCEPTS.md` + `MARKET_CONCEPTS_ZH.md`: bilingual market microstructure glossary
+
+**Done when:** `curl localhost:8000/ohlcv/btcusdt` returns live K-line data ✓
 
 ---
 

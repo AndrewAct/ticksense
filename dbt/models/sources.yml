@@ -1,0 +1,24 @@
+version: 2
+
+sources:
+  - name: normalized
+    description: "Silver layer: normalized, deduplicated Iceberg tables written by Flink."
+    database: iceberg
+    schema: normalized
+    freshness:
+      warn_after:
+        count: 2
+        period: minute
+      error_after:
+        count: 5
+        period: minute
+    loaded_at_field: ingest_ts
+    tables:
+      - name: book_ticker
+        description: "Best bid/ask per symbol, continuous ticks from Binance L2 stream."
+      - name: ohlcv_1m
+        description: "1-minute OHLCV aggregates from Flink tumbling window."
+      - name: symbol_config
+        description: "Trading pair config, CDC-synced from Postgres via Debezium."
+        freshness: null
+        loaded_at_field: updated_at
