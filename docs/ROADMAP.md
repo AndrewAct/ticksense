@@ -132,7 +132,7 @@ ingest/src/ingest/
 
 ### Known limitations
 
-- `kafka_partition` and `kafka_offset` hardcoded to `-1` in normalize output — `SimpleStringSchema` doesn't expose Kafka record metadata. Fix: implement `KafkaRecordDeserializationSchema`.
+~~`kafka_partition` and `kafka_offset` hardcoded to `-1` in normalize output~~ — **Fixed (2026-05-17):** replaced `SimpleStringSchema` with `KafkaRecordDeserializer` (`lib/kafka_schema.py`) in both `normalize.py` and `cdc_symbol_config.py`. Real partition and offset are now stored in Iceberg; `iceberg_reader.py` precise-seek path is active for rows written after the fix.
 
 ---
 

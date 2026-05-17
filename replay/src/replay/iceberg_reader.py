@@ -10,15 +10,10 @@ Strategy
    time window.
 4. Return min/max (partition, offset) per partition.
 
-Known limitation: normalize.py currently sets kafka_partition=-1 and
-kafka_offset=-1 because SimpleStringSchema doesn't expose Kafka record metadata.
-When offsets are -1, this reader falls back to Kafka's offsets_for_times() API,
-which finds the first offset whose timestamp is >= the requested time.  The
-Kafka path is always tried as a verification step even when Iceberg offsets are
-available.
-
-See the Known Limitations section in docs/DEBUGGING_PHASE3.md for the fix
-(implement KafkaRecordDeserializationSchema in normalize.py).
+Rows written before the KafkaRecordDeserializer fix (see lib/kafka_schema.py)
+will have kafka_partition=-1 and kafka_offset=-1.  When all rows in the scan
+window carry -1, this reader falls back to Kafka's offsets_for_times() API.
+New rows written after the fix carry real offsets and take the precise path.
 """
 
 from __future__ import annotations
