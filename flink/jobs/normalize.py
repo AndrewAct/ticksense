@@ -32,6 +32,12 @@ from pathlib import Path
 from typing import Any
 
 from lib.config import Config
+from lib.kafka_schema import (
+    OFFSET_IDX,
+    PARTITION_IDX,
+    PAYLOAD_IDX,
+    KafkaRecordDeserializer,
+)
 from lib.logic import (
     apply_depth_diff,
     best_ask,
@@ -43,7 +49,6 @@ from lib.logic import (
 from lib.sql_runner import add_inserts_from_file, execute_sql_file
 from pyflink.common import Row, WatermarkStrategy
 from pyflink.common.restart_strategy import RestartStrategies
-from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
 from pyflink.datastream import (
     CheckpointingMode,
@@ -125,9 +130,9 @@ def _to_epoch_ms(ts: Any) -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
 
 
-def _kafka_key(msg: str) -> str:
-    """Extract routing key from raw JSON message (called by key_by)."""
-    data = json.loads(msg)
+def _kafka_key(record: Row) -> str:
+    """Extract routing key from Kafka record Row(payload, partition, offset)."""
+    data = json.loads(record[PAYLOAD_IDX])
     return f"{data['exchange']}#{data['symbol']}"
 
 
@@ -155,9 +160,11 @@ class OrderBookProcessor(KeyedProcessFunction):
         )
 
     def process_element(  # type: ignore[override]
-        self, value: str, ctx: KeyedProcessFunction.Context
+        self, value: Row, ctx: KeyedProcessFunction.Context
     ) -> None:
-        msg = json.loads(value)
+        kafka_partition: int = value[PARTITION_IDX]
+        kafka_offset: int = value[OFFSET_IDX]
+        msg = json.loads(value[PAYLOAD_IDX])
         last_update_id: int = int(msg["last_update_id"])
 
         # ── 1. Dedup ──────────────────────────────────────────────────────────
@@ -222,8 +229,8 @@ class OrderBookProcessor(KeyedProcessFunction):
             compute_mid_price(bb_price, ba_price),
             compute_imbalance(book["bids"], book["asks"]),
             Config.TOPIC_RAW,
-            -1,  # partition not available via SimpleStringSchema
-            -1,  # offset not available via SimpleStringSchema
+            kafka_partition,
+            kafka_offset,
         )
 
 
@@ -292,7 +299,7 @@ def main() -> None:
         .set_topics(cfg.TOPIC_RAW)
         .set_group_id(cfg.GROUP_NORMALIZE)
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
-        .set_value_only_deserializer(SimpleStringSchema())
+        .set_deserializer(KafkaRecordDeserializer())
         .build(),
         WatermarkStrategy.no_watermarks(),
         "raw-orderbook-source",
