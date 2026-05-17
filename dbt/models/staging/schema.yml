@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: stg_book_ticker
+    description: "Silver book-ticker: best bid/ask per symbol tick, light casting only."
+    columns:
+      - name: event_id
+        description: "Unique dedup key: {exchange}#{symbol}#{last_update_id}"
+        tests: [not_null]
+      - name: exchange
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: exchange_event_ts
+        description: "Event timestamp from Binance (UTC)."
+        tests: [not_null]
+      - name: ingest_ts
+        description: "Timestamp when the event was written to Iceberg."
+        tests: [not_null]
+      - name: best_bid_price
+        tests: [not_null]
+      - name: best_ask_price
+        tests: [not_null]
+      - name: spread
+        tests: [not_null]
+      - name: mid_price
+        tests: [not_null]
+      - name: imbalance
+        description: "bid_qty / (bid_qty + ask_qty), range [0, 1]."
+        tests: [not_null]
+
+  - name: stg_ohlcv_1m
+    description: "Silver 1-minute OHLCV aggregates from Flink tumbling window."
+    columns:
+      - name: exchange
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: window_start
+        tests: [not_null]
+      - name: window_end
+        tests: [not_null]
+      - name: open_price
+        tests: [not_null]
+      - name: high_price
+        tests: [not_null]
+      - name: low_price
+        tests: [not_null]
+      - name: close_price
+        tests: [not_null]
+      - name: tick_count
+        tests: [not_null]
+
+  - name: stg_symbol_config
+    description: "Current trading pair configuration, CDC-synced from Postgres."
+    columns:
+      - name: symbol
+        tests: [not_null, unique]
+      - name: exchange
+        tests: [not_null]
+      - name: status
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['TRADING', 'BREAK', 'END_OF_DAY']
+      - name: base_asset
+        tests: [not_null]
+      - name: quote_asset
+        tests: [not_null]

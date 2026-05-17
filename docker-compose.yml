@@ -369,8 +369,145 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
+  # ── dbt runner (one-shot: creates staging views + mart tables in Trino) ──────
+
+  dbt-runner:
+    build: ./dbt
+    working_dir: /dbt
+    volumes:
+      - ./dbt:/dbt
+    environment:
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+    command:
+      - bash
+      - -c
+      - |
+        echo "=== Waiting for Flink to create normalized schema ===" && \
+        until python3 -c "
+        import trino, sys
+        try:
+            conn = trino.dbapi.connect(host='trino', port=8080, user='dbt', catalog='iceberg')
+            cur = conn.cursor()
+            cur.execute('SELECT 1 FROM iceberg.normalized.book_ticker LIMIT 1')
+            cur.fetchall()
+            sys.exit(0)
+        except Exception as e:
+            print(f'Not ready: {e}')
+            sys.exit(1)
+        " 2>/dev/null; do
+          echo "  normalized.book_ticker not ready, retrying in 10s..."
+          sleep 10
+        done && \
+        echo "=== normalized schema ready, running dbt ===" && \
+        dbt run --profiles-dir . --no-send-anonymous-usage-stats && \
+        echo "=== dbt run complete ==="
+    depends_on:
+      trino:
+        condition: service_healthy
+      flink-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # ── FastAPI query layer ───────────────────────────────────────────────────────
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    environment:
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+      LOG_LEVEL: INFO
+    ports:
+      - "8000:8000"
+    depends_on:
+      trino:
+        condition: service_healthy
+      dbt-runner:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # ── Prometheus ───────────────────────────────────────────────────────────────
+
+  prometheus:
+    image: victoriametrics/victoria-metrics:v1.102.1
+    volumes:
+      - ./infra/config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/victoria-metrics-data
+    command:
+      - "--promscrape.config=/etc/prometheus/prometheus.yml"
+      - "--promscrape.config.strictParse=false"
+      - "--retentionPeriod=7d"
+      - "--httpListenAddr=:9090"
+    ports:
+      - "9090:9090"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ── Grafana ──────────────────────────────────────────────────────────────────
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/ticksense.json
+    volumes:
+      - ./infra/config/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/config/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # ── k6 load generator (not started by make up — use make load-gen) ──────────
+
+  k6:
+    image: grafana/k6:latest
+    profiles:
+      - load-test
+    volumes:
+      - ./k6:/scripts:ro
+    environment:
+      K6_PROMETHEUS_RW_SERVER_URL: http://prometheus:9090/api/v1/write
+      K6_PROMETHEUS_RW_TREND_STATS: p(50),p(95),p(99),max
+    command: run --out experimental-prometheus-rw /scripts/script.js
+    depends_on:
+      api:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   redpanda-data:
   postgres-data:
   minio-data:
   flink-data:
+  prometheus-data:
+  grafana-data:

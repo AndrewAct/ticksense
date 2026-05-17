@@ -1,6 +1,7 @@
 .PHONY: up down restart logs lint format typecheck test coverage \
         build flink-submit flink-logs flink-venv ingest ingest-logs \
-        dbt-compile dbt-run dbt-test replay-sample watch-cdc help
+        dbt-compile dbt-run dbt-test dbt-freshness replay-sample watch-cdc \
+        load-gen help
 
 # ── Local stack ──────────────────────────────────────────────────────────────
 
@@ -49,14 +50,20 @@ coverage:
 
 # ── dbt ───────────────────────────────────────────────────────────────────────
 
+DBT     = uv run --with dbt-trino dbt --no-send-anonymous-usage-stats
+DBTOPTS = --project-dir dbt --profiles-dir dbt
+
 dbt-compile:
-	uv run dbt compile --project-dir dbt
+	$(DBT) compile $(DBTOPTS)
 
 dbt-run:
-	uv run dbt run --project-dir dbt
+	$(DBT) run $(DBTOPTS)
 
 dbt-test:
-	uv run dbt test --project-dir dbt
+	$(DBT) test $(DBTOPTS)
+
+dbt-freshness:
+	$(DBT) source freshness $(DBTOPTS)
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -65,6 +72,17 @@ replay-sample:
 
 build:
 	docker compose build --no-cache
+
+# ── Load testing ──────────────────────────────────────────────────────────────
+
+load-gen:
+	docker run --rm \
+		--network ticksense_default \
+		-v $(CURDIR)/k6:/scripts:ro \
+		-e K6_PROMETHEUS_RW_SERVER_URL=http://prometheus:9090/api/v1/write \
+		-e 'K6_PROMETHEUS_RW_TREND_STATS=p(50),p(95),p(99),max' \
+		grafana/k6:latest \
+		run --out experimental-prometheus-rw /scripts/script.js
 
 # ── Ingest ────────────────────────────────────────────────────────────────────
 

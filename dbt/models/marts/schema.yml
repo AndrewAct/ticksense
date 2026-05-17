@@ -1,0 +1,65 @@
+version: 2
+
+models:
+  - name: mart_ohlcv
+    description: "1-minute OHLCV for all symbols. Materialized table, refresh on schedule."
+    columns:
+      - name: exchange
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: window_start
+        tests: [not_null]
+      - name: window_end
+        tests: [not_null]
+      - name: open_price
+        tests: [not_null]
+      - name: high_price
+        tests: [not_null]
+      - name: low_price
+        tests: [not_null]
+      - name: close_price
+        tests: [not_null]
+      - name: tick_count
+        tests: [not_null]
+
+  - name: mart_liquidity
+    description: "Real-time spread and order book imbalance per symbol. View — always fresh."
+    columns:
+      - name: exchange
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: latest_ts
+        tests: [not_null]
+      - name: spread_bps
+        tests: [not_null]
+      - name: imbalance
+        tests: [not_null]
+      - name: market_signal
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['BUY_PRESSURE', 'SELL_PRESSURE', 'NEUTRAL']
+      - name: freshness_status
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['FRESH', 'WARN', 'STALE']
+
+  - name: mart_exchange_health
+    description: "Per-symbol pipeline freshness and health score. View — always fresh."
+    columns:
+      - name: exchange
+        tests: [not_null]
+      - name: symbol
+        tests: [not_null]
+      - name: staleness_seconds
+        tests: [not_null]
+      - name: freshness_status
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['FRESH', 'WARN', 'STALE']
+      - name: health_score
+        tests: [not_null]

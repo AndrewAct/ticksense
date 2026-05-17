@@ -24,7 +24,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
-ignore = ["N818"]
+ignore = ["N818", "B008"]  # B008: FastAPI Depends() in defaults is intentional
 
 [tool.ruff.lint.per-file-ignores]
 "flink/**" = ["UP017"]  # datetime.UTC requires Python 3.11+; flink container runs 3.10

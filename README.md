@@ -94,6 +94,9 @@ Once healthy, services are available at:
 | Flink UI | http://localhost:8081 |
 | Trino UI | http://localhost:8082 |
 | Iceberg REST | http://localhost:8181/v1/config |
+| **TickSense API** | **http://localhost:8000** (docs: `/docs`) |
+| **Prometheus** | **http://localhost:9090** |
+| **Grafana** | **http://localhost:3000** (admin / admin) |
 
 ---
 
@@ -353,6 +356,6 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full phase plan.
 | 1 — Local Stack + Ingest | ✅ | docker-compose, Binance WS → Kafka (57 tests, 96% cov) |
 | 2 — Flink Processing | ✅ | Normalize, dedup, OHLCV windows → Iceberg silver (e2e verified 2026-05-15) |
 | 3 — CDC + Replay | ✅ | Debezium CDC, Flink upsert job, replay CLI (e2e verified 2026-05-16) |
-| 4 — Analytics Layer | — | dbt models, FastAPI |
+| 4 — Analytics Layer | ✅ | dbt + Trino, FastAPI, Prometheus, Grafana (e2e verified 2026-05-16) |
 | 5 — Ops + Observability | — | Airflow, Great Expectations, SLA alerts |
 | 6 — Demo + Blog + Web | — | ticksense.ai, demo video, blog posts |

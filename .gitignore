@@ -46,3 +46,11 @@ spark/tmp/
 
 # Jupyter
 .ipynb_checkpoints/
+
+ # Content / scripts (not part of the codebase)
+docs/ARTICLES*.md
+docs/BLOG_IDEAS.md
+docs/SCRIPT*.md
+docs/VIDEO_SCRIPT.md
+*.script.md
+content/

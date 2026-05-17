@@ -1,0 +1,12 @@
+ticksense:
+  target: dev
+  outputs:
+    dev:
+      type: trino
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: "{{ env_var('TRINO_PORT', '8082') | int }}"
+      user: dbt
+      database: iceberg
+      schema: dbt
+      threads: 4
+      http_scheme: http
