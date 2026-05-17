@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from lib.config import Config
+from flink_lib.config import Config
 
 
 class TestConfig:

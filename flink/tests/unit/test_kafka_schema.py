@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from lib.kafka_schema import OFFSET_IDX, PARTITION_IDX, PAYLOAD_IDX, parse_kafka_record
+from flink_lib.kafka_schema import OFFSET_IDX, PARTITION_IDX, PAYLOAD_IDX, parse_kafka_record
 
 
 def _make_record(

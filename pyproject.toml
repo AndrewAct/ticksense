@@ -40,7 +40,7 @@ plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["ingest/tests", "api/tests", "replay/tests", "flink/tests"]
+testpaths = ["ingest/tests", "api/tests", "replay/tests", "flink/tests", "airflow/tests", "spark/tests"]
 addopts = "--tb=short"
 
 [tool.coverage.run]

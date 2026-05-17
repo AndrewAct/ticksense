@@ -56,14 +56,14 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.config import Config
-from lib.kafka_schema import (
+from flink_lib.config import Config
+from flink_lib.kafka_schema import (
     OFFSET_IDX,
     PARTITION_IDX,
     PAYLOAD_IDX,
     KafkaRecordDeserializer,
 )
-from lib.sql_runner import add_inserts_from_file, execute_sql_file
+from flink_lib.sql_runner import add_inserts_from_file, execute_sql_file
 from pyflink.common import Row, WatermarkStrategy
 from pyflink.common.restart_strategy import RestartStrategies
 from pyflink.common.typeinfo import Types

@@ -1,7 +1,7 @@
 """Unit tests for flink/jobs/lib/logic.py — pure Python, no PyFlink dependency."""
 
 import pytest
-from lib.logic import (
+from flink_lib.logic import (
     OHLCVState,
     apply_depth_diff,
     best_ask,
