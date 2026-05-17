@@ -56,11 +56,16 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.config import Config
-from lib.sql_runner import add_inserts_from_file, execute_sql_file
+from flink_lib.config import Config
+from flink_lib.kafka_schema import (
+    OFFSET_IDX,
+    PARTITION_IDX,
+    PAYLOAD_IDX,
+    KafkaRecordDeserializer,
+)
+from flink_lib.sql_runner import add_inserts_from_file, execute_sql_file
 from pyflink.common import Row, WatermarkStrategy
 from pyflink.common.restart_strategy import RestartStrategies
-from pyflink.common.serialization import SimpleStringSchema
 from pyflink.common.typeinfo import Types
 from pyflink.datastream import (
     CheckpointingMode,
@@ -133,19 +138,17 @@ class CdcEnvelopeProcessor(FlatMapFunction):
         - Missing payload (both before and after null) → log warning, skip
     """
 
-    def flat_map(self, value: str) -> None:  # type: ignore[override]
+    def flat_map(self, value: Row) -> None:  # type: ignore[override]
         now_ms = int(datetime.now(UTC).timestamp() * 1000)
-
-        # Tombstone guard: null Kafka value (should not arrive; tombstones.on.delete=false)
-        if value is None:
-            log.warning("cdc_tombstone_received: null value skipped (connector misconfigured?)")
-            return
+        kafka_partition: int = value[PARTITION_IDX]
+        kafka_offset: int = value[OFFSET_IDX]
+        raw_json: str = value[PAYLOAD_IDX]
 
         # ── Parse Debezium envelope ────────────────────────────────────────────
         try:
-            envelope = json.loads(value)
+            envelope = json.loads(raw_json)
         except (json.JSONDecodeError, ValueError) as exc:
-            log.warning("cdc_parse_error error=%s msg_preview=%.200s", exc, value)
+            log.warning("cdc_parse_error error=%s msg_preview=%.200s", exc, raw_json)
             return
 
         op: str = envelope.get("op", "")
@@ -186,10 +189,6 @@ class CdcEnvelopeProcessor(FlatMapFunction):
         )
 
         # ── Emit bronze row ────────────────────────────────────────────────────
-        # kafka_partition and kafka_offset are -1 because SimpleStringSchema
-        # doesn't expose Kafka record metadata (same limitation as normalize.py).
-        # The source_lsn from Debezium's source block is the canonical ordering key
-        # for replay purposes.
         yield Row(
             op,
             symbol,
@@ -199,9 +198,9 @@ class CdcEnvelopeProcessor(FlatMapFunction):
             source_ts_ms,
             tx_id,
             debezium_ts_ms,
-            Config.TOPIC_CDC,  # kafka_topic
-            -1,  # kafka_partition (not available via SimpleStringSchema)
-            -1,  # kafka_offset    (not available via SimpleStringSchema)
+            Config.TOPIC_CDC,
+            kafka_partition,
+            kafka_offset,
             now_ms,
         )
 
@@ -273,7 +272,7 @@ def main() -> None:
         .set_topics(cfg.TOPIC_CDC)
         .set_group_id(cfg.GROUP_CDC_BRONZE)
         .set_starting_offsets(KafkaOffsetsInitializer.earliest())
-        .set_value_only_deserializer(SimpleStringSchema())
+        .set_deserializer(KafkaRecordDeserializer())
         .build(),
         WatermarkStrategy.no_watermarks(),
         "cdc-raw-source",

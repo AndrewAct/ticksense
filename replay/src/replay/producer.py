@@ -6,7 +6,7 @@ Replay protocol
 1. Determine which Kafka offsets correspond to the requested time window:
    a. Try Iceberg reader (reads kafka_offset from normalized.book_ticker).
    b. Fall back to Kafka's offsets_for_times() when Iceberg returns no ranges
-      (the current state due to kafka_offset=-1 in normalize.py).
+      (e.g. rows written before the KafkaRecordDeserializer fix still have -1).
 2. For each partition in the offset range:
    a. Seek a temporary consumer to start_offset.
    b. Read records up to end_offset (or max_events limit).
