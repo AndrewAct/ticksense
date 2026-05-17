@@ -73,6 +73,14 @@ Run `make lint typecheck test coverage` and confirm all pass.
 If touching Docker config: `docker compose config` must succeed.
 If touching dbt: `dbt compile && dbt test` must pass.
 
+After completing any phase or significant feature, **always** update without being asked:
+- `docs/ROADMAP.md` — mark phase complete, list actual deliverables
+- `docs/DEBUGGING_*.md` — add any new gotchas encountered
+- `docs/BLOG_IDEAS.md` — add a new article idea or expand an existing one
+- `docs/VIDEO_SCRIPT.md` — update demo script to cover the new capability
+
+When writing Grafana dashboard coverage in the above docs, explain each panel at a functional level: not just what metric it shows, but *why that metric matters* to a data engineer or quant developer. E.g. "Order book imbalance is a leading indicator of short-term price direction, used in HFT strategies" — not just "shows imbalance value".
+
 ## Skills
 
 Specialized constraints and patterns live in `.skills/`. Read the relevant skill before implementing each layer:
