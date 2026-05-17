@@ -21,8 +21,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from lib.config import Config
-from lib.sql_runner import add_inserts_from_file, execute_sql_file
+from flink_lib.config import Config
+from flink_lib.sql_runner import add_inserts_from_file, execute_sql_file
 from pyflink.common.restart_strategy import RestartStrategies
 from pyflink.datastream import (
     CheckpointingMode,

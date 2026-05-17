@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from lib.sql_runner import (
+from flink_lib.sql_runner import (
     add_inserts_from_file,
     execute_sql_file,
     load_sql,
