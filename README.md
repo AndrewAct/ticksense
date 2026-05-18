@@ -310,7 +310,12 @@ ingest/    Binance WebSocket ingestion → Kafka
     client.py       Async WS client, reconnect, backoff
     main.py         Entry point: asyncio.gather over symbols
 
-api/       FastAPI query layer over Trino
+api/       FastAPI query layer over Trino + Iceberg
+  src/api/
+    read_model.py   in-process ReadModel (hot-path data, no Trino on reads)
+    poller.py       background task: refreshes ReadModel every 30–60 s
+    routers/        hot-path endpoints read model; cold-path (history) hits Trino
+    models/         Pydantic response models per domain
 replay/    Kafka offset replay producer
 flink/     PyFlink streaming jobs (Phase 2)
 airflow/   Orchestration DAGs (Phase 5)
@@ -357,5 +362,5 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full phase plan.
 | 2 — Flink Processing | ✅ | Normalize, dedup, OHLCV windows → Iceberg silver (e2e verified 2026-05-15) |
 | 3 — CDC + Replay | ✅ | Debezium CDC, Flink upsert job, replay CLI (e2e verified 2026-05-16) |
 | 4 — Analytics Layer | ✅ | dbt + Trino, FastAPI, Prometheus, Grafana (e2e verified 2026-05-16) |
-| 5 — Ops + Observability | — | Airflow, Great Expectations, SLA alerts |
+| 5 — Ops + Observability | ✅ | Airflow, Great Expectations, SLA alerts (load test: p(95)=10ms, 0% errors — 2026-05-18; Airflow/Spark pending E2E) |
 | 6 — Demo + Blog + Web | — | ticksense.ai, demo video, blog posts |

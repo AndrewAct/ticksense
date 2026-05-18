@@ -1,6 +1,7 @@
 from typing import Any
 
 import anyio
+import requests
 import structlog
 import trino
 
@@ -19,6 +20,9 @@ class TrinoClient:
         self._port = port
         self._user = user
         self._catalog = catalog
+        # Shared requests.Session so urllib3's HTTPConnectionPool persists across
+        # queries — avoids a new TCP handshake on every fetch() call.
+        self._http_session = requests.Session()
 
     def _connect(self) -> Any:
         return trino.dbapi.connect(  # type: ignore[no-untyped-call]
@@ -27,6 +31,7 @@ class TrinoClient:
             user=self._user,
             catalog=self._catalog,
             http_scheme="http",
+            http_session=self._http_session,
         )
 
     async def fetch(self, sql: str, params: list[object] | None = None) -> list[dict[str, Any]]:

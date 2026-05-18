@@ -205,7 +205,7 @@ Views recalculate `current_timestamp` on every Trino query → always fresh liqu
 
 ```
 GET /health                  liveness check
-GET /ready                   readiness check (pings Trino)
+GET /ready                   readiness: ready (200) / warming_up (503 — ReadModel cold) / unavailable (503 — Trino down)
 GET /metrics                 Prometheus scrape endpoint
 GET /ohlcv/{symbol}          1m OHLCV bars (last 60 by default, filterable by ts range)
 GET /spread/{symbol}         best bid/ask, spread in bps
@@ -239,11 +239,19 @@ GET /symbols                 active trading pairs from CDC symbol_config
 
 ---
 
-## Phase 5 — Ops + Observability (partial ✅ — Airflow + Spark pending E2E)
+## Phase 5 — Ops + Observability (✅ load test passing — Airflow + Spark pending E2E)
 
 **Goal:** Airflow orchestration, Spark backfill/compaction, data quality checks, freshness SLA alerts.
 
-**Status (2026-05-17):** Code complete. Flink kafka-offset fix shipped and verified. Airflow and Spark implemented but not yet E2E tested against the live stack.
+**Status (2026-05-18):** Code complete. Flink kafka-offset fix shipped and verified. Airflow and Spark implemented but not yet E2E tested against the live stack.
+
+Load test fully passing as of 2026-05-18 (branch `fix/ohlcv_endpoints`): k6 10 VUs, 3.5 min — `p(95)=10ms`, `http_req_failed=0.00%`, `checks=100%`. All 16 per-endpoint checks pass. See `DEBUGGING_PHASE5.md` for the full diagnosis (5 root causes fixed).
+
+**Fixes shipped (2026-05-18):**
+- `dbt-runner` now waits for `normalized.ohlcv_1m` rows before running dbt (previously ran before Flink's first 1-min window closed)
+- `make load-test-full` hardened: each wait loop has an explicit timeout (3 min / 3 min / 5 min) and exits with a clear error; Step 5 verifies `mart_ohlcv` rows and polls `/ready` before k6 starts
+- `/ready` endpoint extended to three meaningful states: `ready` (200), `warming_up` (503 — Trino OK but ReadModel not yet populated), `unavailable` (503 — Trino unreachable)
+- Prometheus label case fixed: ReadModel dict keys uppercase (`"BTCUSDT"`), Prometheus labels lowercase (`"btcusdt"`) — Grafana queries with `{symbol="btcusdt"}` now resolve correctly
 
 ### Kafka offset fix ✅
 

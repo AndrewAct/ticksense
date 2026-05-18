@@ -225,3 +225,300 @@ Phase 5 originally used a bare `lib/` directory in both `flink/jobs/` and `spark
 | Flink UI | 8081 |
 | Redpanda Console | 8080 |
 | Debezium | 8083 |
+
+---
+
+## Load Test — OHLCV 404 on Fresh Start — dbt Timing + Poller Race (2026-05-18)
+
+### Symptom
+
+After `docker system prune -f` + `make up` + `make load-test-full`, k6 shows:
+- `ohlcv 200` → 0% for the first 60–90 s of the test, then 100%
+- k6 final report: all checks pass (100%) — but only because warm-up 404s happened before the threshold window closes
+
+Grafana "Success Rate by Endpoint": `/ohlcv/{param}` appears with 100% success only from the moment k6 starts, not from `make up`.
+
+### Root cause 1 — `dbt-runner` creates empty `mart_ohlcv`
+
+`dbt-runner` in docker-compose waited for `normalized.book_ticker` to have rows, then immediately ran `dbt`. At that moment, `normalized.ohlcv_1m` was still empty — Flink needs ~120 s for the first 1-minute tumbling window to close and checkpoint. Result: `mart_ohlcv` created with 0 rows. The dbt log line that reveals this:
+
+```
+4 of 6 OK created sql table model marts.mart_ohlcv ... [CREATE TABLE (0 rows)]
+```
+
+**Fix applied:** Updated `dbt-runner` command in `docker-compose.yml` to wait for BOTH `normalized.book_ticker` AND `normalized.ohlcv_1m` before running dbt. `make up` now takes ~2 min longer, but `mart_ohlcv` is always correctly populated on first start.
+
+### Root cause 2 — `make load-test-full` had no timeout guards
+
+All three wait loops were infinite:
+- Step 1 (Flink RUNNING): could spin forever if `flink-init` failed silently
+- Step 3 (book_ticker): could spin if ingest was broken
+- Step 3 (ohlcv_1m): could spin if the Flink OHLCV job crashed after submission
+
+**Fix applied:** Added `date +%s` based timeouts to all three loops:
+- Flink RUNNING: 3-minute timeout (job submit + state transition)
+- book_ticker: 3-minute timeout (first checkpoint)
+- ohlcv_1m: 5-minute timeout (1-min window must close first)
+
+On timeout each loop prints a specific diagnostic command and exits 1.
+
+### Root cause 3 — Step 5 only verified `mart_liquidity`, not `mart_ohlcv`
+
+The original Step 5 checked `mart_liquidity` row count as a proxy for "dbt ran successfully". But dbt can successfully create an empty `mart_ohlcv` (0 rows) while `mart_liquidity` has rows — they source from different upstream tables.
+
+**Fix applied:** Added explicit `mart_ohlcv` row count check to Step 5.
+
+### Root cause 4 — k6 started before API poller refreshed from newly-populated mart
+
+Sequence:
+1. Step 4 runs dbt → `mart_ohlcv` now has rows
+2. Step 5 (old): immediately ran k6
+3. API poller refreshes OHLCV every 60 s — the ReadModel still had the old empty dict
+4. First 0–60 s of k6: all OHLCV requests return 404
+
+**Fix applied:** Added readiness poll at the end of Step 5 using the `/ready` endpoint. k6 starts only after `/ready` returns 200.
+
+### Root cause 5 — Step 5 polling used the real OHLCV endpoint
+
+The polling loop (`curl /ohlcv/btcusdt`) generated 404 traffic that Prometheus recorded against the `/ohlcv/{param}` endpoint. This:
+- Made the "Success Rate by Endpoint" panel show the endpoint appearing late (only when 2xx started)
+- Added noise to the "HTTP Status Codes" panel
+
+**Fix applied:** Extended `/ready` to also check `model.ready and model.ohlcv` (not just Trino ping). Step 5 now polls `/ready` instead of the real endpoint. The `/ready` endpoint has three meaningful states:
+
+| Response | Meaning |
+|---|---|
+| 200 `ready` | Trino reachable + ReadModel populated |
+| 503 `warming_up` | Trino reachable but ReadModel ohlcv dict is empty |
+| 503 `unavailable` | Trino not reachable |
+
+### `docker system prune -f` does NOT remove named volumes
+
+**Common misconception:** "I ran `docker system prune -f` to clean up data" — this removes stopped containers, unused networks, dangling images, and build cache. Named volumes (`redpanda-data`, `minio-data`, etc.) are NOT removed unless you also pass `--volumes`.
+
+**Correct cleanup command:**
+```bash
+make down          # = docker compose down -v — removes containers AND named volumes
+make up            # fresh start, all volumes recreated
+```
+
+If you run `docker system prune -f` without `make down` first, old Iceberg data, Kafka offsets, and Flink checkpoints all survive in named volumes. This can cause confusing state where old data from a previous session passes "does the table have rows?" checks without being recent.
+
+---
+
+## Grafana — "Live Market Prices" Shows "No Data" (2026-05-18)
+
+### Symptom
+
+The `BTC / USD`, `ETH / USD`, `SOL / USD`, `BNB / USD`, `XRP / USD` stat panels all show "No data". Other panels (Bid-Ask Spread, Order Book Imbalance, Health Score) work correctly.
+
+### Root cause — Prometheus label case mismatch
+
+Grafana queries: `market_mid_price_usd{symbol="btcusdt"}` (lowercase)
+
+But `_poll_liquidity` in `poller.py` built Prometheus labels from:
+```python
+sym = str(r["symbol"]).upper()   # "BTCUSDT"
+lbl = {"symbol": sym, ...}       # label is uppercase
+MID_PRICE.labels(**lbl).set(r["mid_price"])
+```
+
+Prometheus stored `market_mid_price_usd{symbol="BTCUSDT"}`. The query `{symbol="btcusdt"}` finds nothing → "No data".
+
+**Why Bid-Ask Spread still worked:** Its Grafana query is `market_spread_bps` with no `{symbol=...}` filter — all series (regardless of case) are returned.
+
+**Fix applied:** Split the label construction from the ReadModel key:
+```python
+sym = str(r["symbol"]).upper()                          # ReadModel dict key (uppercase)
+lbl = {"symbol": str(r["symbol"]).lower(), ...}         # Prometheus labels (lowercase)
+```
+
+**Rule:** ReadModel lookups use uppercase (routers call `.upper()` on the URL path param). Prometheus labels use lowercase (matches Grafana query conventions and the mart's storage format). These are two different concerns — don't conflate them via a shared `lbl` dict.
+
+---
+
+## Which Component Fails Most Often?
+
+Short answer: **Flink**, followed by the startup sequencing glue.
+
+### Flink (highest failure rate)
+
+Flink is the most operationally fragile component for several reasons:
+
+1. **Job submission failures** — `flink-init` is a one-shot container. If any Flink job fails to submit (ImportError, Java class not found, SQL parse error, classpath issue), the entire downstream cascade fails: `flink-init → dbt-runner → api → prometheus → grafana` all stay in "Created" state. The failure mode is silent from the outside — you see `docker ps -a` showing downstream services as "Created" (not "Exited"), which is confusing until you know the cascade rule. **Diagnosis:** Always check `docker logs ticksense-flink-init-1` first.
+
+2. **Python/Java binding gaps** — PyFlink 1.18 does not expose many Java-side APIs (`KafkaRecordDeserializationSchema`, `set_deserializer()`). The `try/except ImportError: pass` pattern that PyFlink uses internally can silently swallow import failures, leaving classes undefined. No error at import time — error only when the class is used.
+
+3. **Image rebuild trap** — Flink serializes job functions via `cloudpickle` at submission time, capturing the Python environment from the jobmanager. If jobmanager and taskmanager have different versions of any dependency, the deserialized function fails on the taskmanager. Always rebuild all three images together: `docker compose build flink-jobmanager flink-taskmanager flink-init`.
+
+4. **Checkpoint/S3 state** — After a restart, Flink tries to resume from the latest checkpoint in `s3://ticksense/flink-checkpoints`. If the checkpoint references Kafka offsets that no longer exist (topic was re-created with different offsets), Flink fails to restart the job. Fix: delete the checkpoint dir in MinIO and restart fresh.
+
+5. **Memory pressure** — The default `taskmanager.numberOfTaskSlots: 4` with 3 running jobs can exhaust the 512M JVM heap on resource-constrained machines. Symptom: `OutOfMemoryError` in taskmanager logs, jobs restart repeatedly.
+
+### Startup sequencing (second most fragile)
+
+The `dbt-runner → api → prometheus → grafana` chain means a dbt failure (even a partial one like empty marts) propagates to the API serving stale/empty data. This is not a crash — it's a silent data quality failure that only surfaces when you query the API or run a load test.
+
+**The key insight:** `depends_on: service_completed_successfully` only checks that a service exited with code 0. It says nothing about whether the data that service was supposed to produce is actually there or is fresh. Build readiness checks into your operational tooling (like `make load-test-full`), not just into docker-compose dependency conditions.
+
+### Trino (cold-start flakiness)
+
+Trino takes 30–40 s to fully initialize. The healthcheck (`/v1/info` must show `"starting": false`) catches most issues, but early query failures can still occur if Trino is warming up its query planner. Symptom: first few API requests get `503 unavailable` from `/ready`. Fix: add a retry loop in your client or wait 10 s after `make up` before querying.
+
+**If Trino fails:**
+```bash
+docker compose logs trino | grep -i error
+docker compose restart trino
+# wait 40 s for healthcheck to pass
+curl http://localhost:8082/v1/info
+```
+
+### Redpanda (most stable)
+
+Redpanda is by far the most stable component. In all testing sessions it has never failed to start or become unavailable once running. The only operational issue is topic creation on restart — `redpanda-init` uses `|| true` so it silently skips already-existing topics, which is correct behavior.
+
+**If Redpanda fails:**
+```bash
+docker compose logs redpanda | tail -30
+# Check disk space — Redpanda is sensitive to disk pressure
+docker compose restart redpanda
+# Let healthcheck pass (rpk cluster health), then restart redpanda-init to recreate topics if needed
+```
+
+### MinIO/Iceberg (stable, but stateful)
+
+MinIO is stable but stateful. If MinIO data is corrupted (e.g., partial writes during a crash), Iceberg metadata can become inconsistent. The symptom is Trino returning errors on specific tables. Fix: `make down && make up` (fresh volumes). Never delete individual files from MinIO manually — always operate through Iceberg procedures or `make down`.
+
+---
+
+## Load Test — k6 OHLCV 100% 404 + High Latency Diagnosis (2026-05-17)
+
+### Symptom
+
+k6 load test (10 VUs, 3.5 min ramp-up profile) shows:
+- `ohlcv 200`: 0% — all 409 requests return 404
+- `http_req_failed`: 16.66% (= 409 failed / 2454 total — all failures are from ohlcv)
+- `errors`: 0.00% — no 5xx errors
+- p(95) latency: 149ms at only 10 VUs
+
+### Root cause 1 — OHLCV 404 (data pipeline gap)
+
+`iceberg.marts.mart_ohlcv` is empty. The API correctly returns 404 when no rows exist.
+
+The chain is: `Flink ohlcv_1m.py → iceberg_cat.normalized.ohlcv_1m → dbt stg_ohlcv_1m → dbt mart_ohlcv → API`.
+
+If either step is missing, the mart is empty:
+1. The Flink OHLCV job (`flink/jobs/ohlcv_1m.py`) was not running during the test
+2. `dbt run` was not executed after Flink started writing to `normalized.ohlcv_1m`
+
+The distinguishing signal is `errors: 0%` — if the table didn't exist at all, Trino would throw an exception → the API would return 500 → errors would be non-zero. 0% errors + 16.66% http_req_failed = 404 = table exists, data absent.
+
+**Fix:** Ensure the Flink OHLCV job is running before load testing, and that `dbt run` has been executed. In docker-compose, `dbt-runner` runs automatically after Flink initialises the schema.
+
+### Root cause 2 — Latency (no caching + new connection per request)
+
+Three stacked problems:
+1. `TrinoClient._connect()` opens a new TCP connection to Trino on **every request** (connection setup ~20-50ms overhead even before the query executes)
+2. Trino has a ~50-100ms minimum query latency floor per query due to distributed query planning overhead — even `WHERE symbol = X LIMIT 60` pays this cost
+3. Zero response caching: OHLCV bars change at most every 60s (one checkpoint), liquidity every ~5s, but every API request hits Trino cold
+
+At 10 VUs: p(95)=149ms. At 100+ VUs: Trino connection storm pushes latency past 500ms.
+
+**Fix applied (2026-05-17):**
+- `api/src/api/dependencies.py`: `get_client()` decorated with `@lru_cache(maxsize=1)` → singleton TrinoClient
+- `api/src/api/routers/ohlcv.py`: `TTLCache(maxsize=500, ttl=60)` keyed by `(symbol, limit, from_ts, to_ts)` — 60s TTL aligns with the 1-minute bar interval; cached hits are microsecond-fast
+- `api/src/api/routers/liquidity.py`: `TTLCache(maxsize=200, ttl=5)` for spread and liquidity — 5s TTL matches order book update cadence
+- `api/tests/integration/test_endpoints.py`: `autouse` fixture clears module-level caches before each test to prevent cross-test cache hits poisoning `mock.fetch.call_args`
+- `api/pyproject.toml`: added `cachetools>=5.3` dependency
+
+**Thread safety note:** `cachetools.TTLCache` is not thread-safe. All cache reads/writes are protected with a `threading.Lock`. This matters because `anyio.to_thread.run_sync` runs Trino calls in a thread pool — without the lock, concurrent requests can corrupt the cache.
+
+### Poller-as-read-model (2026-05-17)
+
+The next architectural step was removing Trino entirely from the hot request path.
+
+**Before:** Every API request → TTL cache check → Trino query (on cache miss)
+**After:** Every API request → in-process `ReadModel` dict lookup (<1 µs). Trino is only called by the background poller on its refresh schedule.
+
+**`api/src/api/read_model.py`** — New module. `ReadModel` dataclass holds:
+- `spread: dict[str, SpreadResponse]` and `liquidity: dict[str, LiquidityResponse]` — keyed by uppercase symbol
+- `ohlcv: dict[str, OHLCVResponse]` — last 60 bars per symbol, newest-first
+- `pipeline: PipelineLagResponse | None`
+- `symbols: SymbolsResponse | None`
+- `ready: bool` — False until first full poll cycle completes
+
+**`poller.py`** — Full rewrite. Replaces the old single-query poller with four separate refresh functions, each called on its own cadence:
+- `_poll_liquidity` / `_poll_pipeline`: every 30 s, also update Prometheus gauges
+- `_poll_ohlcv`: every 60 s, single window-function query for ALL symbols
+- `_poll_symbols`: every 300 s (CDC data rarely changes)
+
+OHLCV SQL uses `ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY window_start DESC)` to get the 60 most-recent bars per symbol in one round trip, bounded to `WHERE window_start >= NOW() - INTERVAL '2' HOUR` to keep the scan cheap.
+
+**Endpoint routing:**
+- Spread / liquidity / pipeline / symbols: read from `ReadModel`, no Trino at all
+- OHLCV default (`limit ≤ 60`, no time filter): read from `ReadModel`, sub-millisecond
+- OHLCV historical (`from_ts` / `to_ts` set, or `limit > 60`): cold path to Trino, with `TTLCache(60 s)` so repeated analytical queries don't pound Trino
+
+**Cold-start (before first poll completes):** endpoints return `503 Service Warming Up`. The initial poll runs immediately in `run_poller()` via `asyncio.gather(return_exceptions=True)` — in practice the warm-up window is < 1 s on a healthy stack.
+
+**Thread-safety:** `ReadModel` fields are updated by swapping entire dicts (`_model.spread = new_dict`). Under CPython's GIL, dict reference assignment is atomic — request handlers either see the old dict or the new one, never a partial update. The `TTLCache` on the cold path still uses a `threading.Lock` as before.
+
+---
+
+## Load Test — Symbol Case Bug: spread/liquidity 100% 404 Despite Mart Having Data (2026-05-18)
+
+### Symptom
+
+After the ReadModel architecture was deployed (p(95)=10 ms confirmed), a second load test showed:
+- `spread 200` ↳ 0% (all 404)
+- `liquidity 200` ↳ 0% (all 404)
+- `ohlcv 200` ↳ 0% (all 404)
+
+Yet `mart_liquidity` had 5 rows and `poll_liquidity_ok symbols=5` appeared in the API logs.
+
+### Root cause 1 — Symbol case mismatch (spread + liquidity)
+
+`mart_liquidity` stores symbols in **lowercase** (`btcusdt`, `ethusdt`, …). The poller built the ReadModel dict with lowercase keys:
+
+```python
+sym = str(r["symbol"])          # "btcusdt"
+new_spread[sym] = ...           # keyed "btcusdt"
+```
+
+But the router looked up with `.upper()`:
+
+```python
+sym = symbol.upper()            # "BTCUSDT"
+model.spread.get(sym)           # None → 404
+```
+
+The unit tests passed because the test fixture directly populated the model with `"BTCUSDT"` (uppercase), matching what the router expected. The mismatch only appeared in production where the mart uses lowercase.
+
+**Fix:** `sym = str(r["symbol"]).upper()` in both `_poll_liquidity` and `_poll_ohlcv` in `poller.py`.
+
+**Rule:** Always normalize symbol keys to uppercase at the point where the ReadModel dict is built, not at the lookup site. That way, routers can use `.upper()` without coupling to the mart's storage convention.
+
+### Root cause 2 — mart_ohlcv empty (dbt timing)
+
+`mart_ohlcv` had 0 rows even though Flink was running. The cause:
+
+```
+make up
+  → flink-init submits Flink jobs (~30 s)
+  → dbt-runner runs dbt IMMEDIATELY after flink-init exits
+      At this point Flink has not completed a single checkpoint.
+      normalized.ohlcv_1m is empty → mart_ohlcv is empty.
+  → api starts, poller polls → poll_ohlcv_ok symbols=0
+```
+
+Docker Compose `depends_on: service_completed_successfully` only waits for the service to *exit*, not for the system it triggered to *produce data*. The dbt-runner exits before Flink writes its first row.
+
+**Fix:** After `make up`, wait ~60 s for Flink to checkpoint, then run `make dbt-run` manually. The `make load-test-full` target automates this:
+
+1. Waits until 2 Flink jobs are `RUNNING`
+2. Waits until `normalized.book_ticker` has rows (proxy for first checkpoint)
+3. Runs `dbt run`
+4. Verifies `mart_liquidity` has rows
+5. Runs k6
+
+**Rule:** Never assume `dbt-runner` produced fresh marts. It runs once at startup under ideal conditions (stack just started, no data yet). For any load test or manual verification, run `make dbt-run` after the pipeline has been flowing for at least one minute.

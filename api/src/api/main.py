@@ -49,9 +49,14 @@ async def health() -> JSONResponse:
 
 @app.get("/ready", tags=["ops"])
 async def ready() -> JSONResponse:
-    if await get_client().ping():
-        return JSONResponse({"status": "ready"})
-    return JSONResponse({"status": "unavailable"}, status_code=503)
+    from .read_model import get_read_model
+
+    if not await get_client().ping():
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    model = get_read_model()
+    if not model.ready or not model.ohlcv:
+        return JSONResponse({"status": "warming_up"}, status_code=503)
+    return JSONResponse({"status": "ready"})
 
 
 @app.exception_handler(Exception)

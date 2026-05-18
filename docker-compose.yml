@@ -383,7 +383,7 @@ services:
       - bash
       - -c
       - |
-        echo "=== Waiting for Flink to create normalized schema ===" && \
+        echo "=== Waiting for normalized.book_ticker ===" && \
         until python3 -c "
         import trino, sys
         try:
@@ -399,7 +399,23 @@ services:
           echo "  normalized.book_ticker not ready, retrying in 10s..."
           sleep 10
         done && \
-        echo "=== normalized schema ready, running dbt ===" && \
+        echo "=== Waiting for first OHLCV bar (1-min window + checkpoint ~120 s) ===" && \
+        until python3 -c "
+        import trino, sys
+        try:
+            conn = trino.dbapi.connect(host='trino', port=8080, user='dbt', catalog='iceberg')
+            cur = conn.cursor()
+            cur.execute('SELECT 1 FROM iceberg.normalized.ohlcv_1m LIMIT 1')
+            rows = cur.fetchall()
+            sys.exit(0 if rows else 1)
+        except Exception as e:
+            print(f'Not ready: {e}')
+            sys.exit(1)
+        " 2>/dev/null; do
+          echo "  normalized.ohlcv_1m not ready, retrying in 10s..."
+          sleep 10
+        done && \
+        echo "=== normalized data ready, running dbt ===" && \
         dbt run --profiles-dir . --no-send-anonymous-usage-stats && \
         echo "=== dbt run complete ==="
     depends_on:
