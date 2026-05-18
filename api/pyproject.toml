@@ -12,6 +12,7 @@ dependencies = [
     "trino>=0.328.0",
     "prometheus-client>=0.20.0",
     "anyio>=4.0",
+    "cachetools>=5.3",
 ]
 
 [build-system]

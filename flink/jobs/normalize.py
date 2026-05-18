@@ -126,6 +126,28 @@ def _to_epoch_ms(ts: Any) -> int:
     return int(datetime.now(UTC).timestamp() * 1000)
 
 
+# TODO: this does not pass the lint test. Refactor later
+# def _is_valid_record(record: Row) -> bool:
+#     """Return False for messages that can't be keyed (malformed JSON or missing fields)."""
+#     try:
+#         data = json.loads(record[PAYLOAD_IDX])
+#         if "exchange" not in data or "symbol" not in data:
+#             log.warning(
+#               "dropping_malformed_record",
+#               offset=record[OFFSET_IDX],
+#               partition=record[PARTITION_IDX]
+#               )
+#             return False
+#         return True
+#     except Exception:
+#         log.warning(
+#           "dropping_unparseable_record",
+#           offset=record[OFFSET_IDX],
+#           partition=record[PARTITION_IDX]
+#           )
+#         return False
+
+
 def _kafka_key(record: Row) -> str:
     """Extract routing key from Kafka record Row(payload, partition, offset)."""
     data = json.loads(record[PAYLOAD_IDX])
@@ -296,7 +318,14 @@ def main() -> None:
         KAFKA_RECORD_TYPE,
     )
 
+    # TODO: finish after refactor `_is_valid`
     # ── Stateful DataStream processing ────────────────────────────────────────
+    # processed_stream = (
+    #     raw_stream.filter(_is_valid_record).key_by(_kafka_key).process(
+    #         OrderBookProcessor(), output_type=BOOK_TICKER_TYPE
+    #     )
+    # )
+
     processed_stream = raw_stream.key_by(_kafka_key).process(
         OrderBookProcessor(), output_type=BOOK_TICKER_TYPE
     )

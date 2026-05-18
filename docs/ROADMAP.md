@@ -243,7 +243,7 @@ GET /symbols                 active trading pairs from CDC symbol_config
 
 **Goal:** Airflow orchestration, Spark backfill/compaction, data quality checks, freshness SLA alerts.
 
-**Status (2026-05-17):** Code complete. Flink kafka-offset fix shipped and verified. Airflow and Spark implemented but not yet E2E tested against the live stack.
+**Status (2026-05-17):** Code complete. Flink kafka-offset fix shipped and verified. Airflow and Spark implemented but not yet E2E tested against the live stack. Load test (k6, 10 VUs, 3.5 min) run 2026-05-17: spread/liquidity/pipeline/symbols all pass; OHLCV 100% 404 (mart_ohlcv empty — Flink OHLCV job must be running + dbt must be run before load test). API response caching added (cachetools TTLCache: OHLCV 60s, spread/liquidity 5s) and singleton TrinoClient. See DEBUGGING_PHASE5.md for load test diagnosis.
 
 ### Kafka offset fix ✅
 

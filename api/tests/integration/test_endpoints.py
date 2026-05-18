@@ -7,6 +7,12 @@ from httpx import ASGITransport, AsyncClient
 
 from api.dependencies import get_client
 from api.main import app
+from api.models.liquidity import LiquidityResponse, SpreadResponse
+from api.models.ohlcv import OHLCVBar, OHLCVResponse
+from api.models.pipeline import PipelineLagItem, PipelineLagResponse
+from api.models.symbols import SymbolItem, SymbolsResponse
+from api.read_model import get_read_model
+from api.routers.ohlcv import _cold_cache
 from api.trino_client import TrinoClient
 
 NOW = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
@@ -70,6 +76,45 @@ def _mock_client(rows: list[dict[str, Any]]) -> TrinoClient:
     return client
 
 
+@pytest.fixture(autouse=True)
+def setup_read_model():
+    """Pre-populate the read model before each test and reset it after.
+
+    This replaces the old pattern of dependency-overriding get_client() for
+    every endpoint test.  Endpoints that still use Trino (OHLCV cold path)
+    continue to use app.dependency_overrides within their own tests.
+    """
+    model = get_read_model()
+    model.ready = True
+    model.spread["BTCUSDT"] = SpreadResponse.model_validate(_LIQUIDITY_ROW)
+    model.liquidity["BTCUSDT"] = LiquidityResponse.model_validate(_LIQUIDITY_ROW)
+    model.ohlcv["BTCUSDT"] = OHLCVResponse(
+        symbol="BTCUSDT",
+        exchange="binance",
+        bars=[OHLCVBar.model_validate(_OHLCV_ROW)],
+        count=1,
+    )
+    model.pipeline = PipelineLagResponse(
+        items=[PipelineLagItem.model_validate(_HEALTH_ROW)],
+        checked_at=NOW,
+        healthy_count=1,
+        total_count=1,
+    )
+    model.symbols = SymbolsResponse(
+        symbols=[SymbolItem.model_validate(_SYMBOL_ROW)],
+        count=1,
+    )
+    _cold_cache.clear()
+    yield
+    model.ready = False
+    model.spread.clear()
+    model.liquidity.clear()
+    model.ohlcv.clear()
+    model.pipeline = None
+    model.symbols = None
+    _cold_cache.clear()
+
+
 @pytest.fixture
 def http_client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
@@ -99,10 +144,8 @@ class TestHealthEndpoints:
 
 class TestOHLCVEndpoint:
     async def test_get_ohlcv(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([_OHLCV_ROW])
         async with http_client as c:
             resp = await c.get("/ohlcv/btcusdt")
-        app.dependency_overrides.clear()
         assert resp.status_code == 200
         body = resp.json()
         assert body["symbol"] == "BTCUSDT"
@@ -110,74 +153,113 @@ class TestOHLCVEndpoint:
         assert body["interval"] == "1m"
 
     async def test_get_ohlcv_not_found(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([])
         async with http_client as c:
             resp = await c.get("/ohlcv/UNKNOWN")
-        app.dependency_overrides.clear()
         assert resp.status_code == 404
 
     async def test_get_ohlcv_symbol_uppercased(self, http_client: AsyncClient) -> None:
-        mock = _mock_client([_OHLCV_ROW])
-        app.dependency_overrides[get_client] = lambda: mock
+        # lowercase request → model is keyed uppercase → response symbol is uppercase
         async with http_client as c:
-            await c.get("/ohlcv/btcusdt")
+            resp = await c.get("/ohlcv/btcusdt")
+        assert resp.status_code == 200
+        assert resp.json()["symbol"] == "BTCUSDT"
+
+    async def test_get_ohlcv_limit_slice(self, http_client: AsyncClient) -> None:
+        # limit < preloaded bars should slice correctly
+        model = get_read_model()
+        bar = OHLCVBar.model_validate(_OHLCV_ROW)
+        model.ohlcv["BTCUSDT"] = OHLCVResponse(
+            symbol="BTCUSDT", exchange="binance", bars=[bar, bar, bar], count=3
+        )
+        async with http_client as c:
+            resp = await c.get("/ohlcv/btcusdt?limit=2")
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 2
+
+    async def test_get_ohlcv_not_ready(self, http_client: AsyncClient) -> None:
+        get_read_model().ready = False
+        async with http_client as c:
+            resp = await c.get("/ohlcv/btcusdt")
+        assert resp.status_code == 503
+
+    async def test_get_ohlcv_historical_range(self, http_client: AsyncClient) -> None:
+        # from_ts triggers the cold (Trino) path; use params= so httpx encodes + correctly
+        app.dependency_overrides[get_client] = lambda: _mock_client([_OHLCV_ROW])
+        async with http_client as c:
+            resp = await c.get("/ohlcv/btcusdt", params={"from_ts": NOW.isoformat()})
         app.dependency_overrides.clear()
-        call_args = mock.fetch.call_args  # type: ignore[union-attr]
-        assert "BTCUSDT" in call_args.args[1]
+        assert resp.status_code == 200
+        assert resp.json()["count"] == 1
+
+    async def test_get_ohlcv_historical_not_found(self, http_client: AsyncClient) -> None:
+        app.dependency_overrides[get_client] = lambda: _mock_client([])
+        async with http_client as c:
+            resp = await c.get("/ohlcv/UNKNOWN", params={"from_ts": NOW.isoformat()})
+        app.dependency_overrides.clear()
+        assert resp.status_code == 404
 
 
 class TestLiquidityEndpoints:
     async def test_get_spread(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([_LIQUIDITY_ROW])
         async with http_client as c:
             resp = await c.get("/spread/btcusdt")
-        app.dependency_overrides.clear()
         assert resp.status_code == 200
         assert resp.json()["spread_bps"] == 0.4
 
     async def test_get_spread_not_found(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([])
         async with http_client as c:
             resp = await c.get("/spread/UNKNOWN")
-        app.dependency_overrides.clear()
         assert resp.status_code == 404
 
+    async def test_get_spread_not_ready(self, http_client: AsyncClient) -> None:
+        get_read_model().ready = False
+        async with http_client as c:
+            resp = await c.get("/spread/btcusdt")
+        assert resp.status_code == 503
+
     async def test_get_liquidity(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([_LIQUIDITY_ROW])
         async with http_client as c:
             resp = await c.get("/liquidity/btcusdt")
-        app.dependency_overrides.clear()
         assert resp.status_code == 200
         assert resp.json()["market_signal"] == "BUY_PRESSURE"
 
 
 class TestPipelineEndpoint:
     async def test_get_pipeline_lag(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([_HEALTH_ROW])
         async with http_client as c:
             resp = await c.get("/pipeline/lag")
-        app.dependency_overrides.clear()
         assert resp.status_code == 200
         body = resp.json()
         assert body["total_count"] == 1
         assert body["healthy_count"] == 1
 
     async def test_pipeline_lag_empty(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([])
+        get_read_model().pipeline = PipelineLagResponse(
+            items=[], checked_at=NOW, healthy_count=0, total_count=0
+        )
         async with http_client as c:
             resp = await c.get("/pipeline/lag")
-        app.dependency_overrides.clear()
         assert resp.status_code == 200
         assert resp.json()["total_count"] == 0
+
+    async def test_pipeline_not_ready(self, http_client: AsyncClient) -> None:
+        get_read_model().ready = False
+        async with http_client as c:
+            resp = await c.get("/pipeline/lag")
+        assert resp.status_code == 503
 
 
 class TestSymbolsEndpoint:
     async def test_list_symbols(self, http_client: AsyncClient) -> None:
-        app.dependency_overrides[get_client] = lambda: _mock_client([_SYMBOL_ROW])
         async with http_client as c:
             resp = await c.get("/symbols")
-        app.dependency_overrides.clear()
         assert resp.status_code == 200
         body = resp.json()
         assert body["count"] == 1
         assert body["symbols"][0]["symbol"] == "BTCUSDT"
+
+    async def test_symbols_not_ready(self, http_client: AsyncClient) -> None:
+        get_read_model().ready = False
+        async with http_client as c:
+            resp = await c.get("/symbols")
+        assert resp.status_code == 503

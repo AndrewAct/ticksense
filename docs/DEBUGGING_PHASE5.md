@@ -225,3 +225,137 @@ Phase 5 originally used a bare `lib/` directory in both `flink/jobs/` and `spark
 | Flink UI | 8081 |
 | Redpanda Console | 8080 |
 | Debezium | 8083 |
+
+---
+
+## Load Test — k6 OHLCV 100% 404 + High Latency Diagnosis (2026-05-17)
+
+### Symptom
+
+k6 load test (10 VUs, 3.5 min ramp-up profile) shows:
+- `ohlcv 200`: 0% — all 409 requests return 404
+- `http_req_failed`: 16.66% (= 409 failed / 2454 total — all failures are from ohlcv)
+- `errors`: 0.00% — no 5xx errors
+- p(95) latency: 149ms at only 10 VUs
+
+### Root cause 1 — OHLCV 404 (data pipeline gap)
+
+`iceberg.marts.mart_ohlcv` is empty. The API correctly returns 404 when no rows exist.
+
+The chain is: `Flink ohlcv_1m.py → iceberg_cat.normalized.ohlcv_1m → dbt stg_ohlcv_1m → dbt mart_ohlcv → API`.
+
+If either step is missing, the mart is empty:
+1. The Flink OHLCV job (`flink/jobs/ohlcv_1m.py`) was not running during the test
+2. `dbt run` was not executed after Flink started writing to `normalized.ohlcv_1m`
+
+The distinguishing signal is `errors: 0%` — if the table didn't exist at all, Trino would throw an exception → the API would return 500 → errors would be non-zero. 0% errors + 16.66% http_req_failed = 404 = table exists, data absent.
+
+**Fix:** Ensure the Flink OHLCV job is running before load testing, and that `dbt run` has been executed. In docker-compose, `dbt-runner` runs automatically after Flink initialises the schema.
+
+### Root cause 2 — Latency (no caching + new connection per request)
+
+Three stacked problems:
+1. `TrinoClient._connect()` opens a new TCP connection to Trino on **every request** (connection setup ~20-50ms overhead even before the query executes)
+2. Trino has a ~50-100ms minimum query latency floor per query due to distributed query planning overhead — even `WHERE symbol = X LIMIT 60` pays this cost
+3. Zero response caching: OHLCV bars change at most every 60s (one checkpoint), liquidity every ~5s, but every API request hits Trino cold
+
+At 10 VUs: p(95)=149ms. At 100+ VUs: Trino connection storm pushes latency past 500ms.
+
+**Fix applied (2026-05-17):**
+- `api/src/api/dependencies.py`: `get_client()` decorated with `@lru_cache(maxsize=1)` → singleton TrinoClient
+- `api/src/api/routers/ohlcv.py`: `TTLCache(maxsize=500, ttl=60)` keyed by `(symbol, limit, from_ts, to_ts)` — 60s TTL aligns with the 1-minute bar interval; cached hits are microsecond-fast
+- `api/src/api/routers/liquidity.py`: `TTLCache(maxsize=200, ttl=5)` for spread and liquidity — 5s TTL matches order book update cadence
+- `api/tests/integration/test_endpoints.py`: `autouse` fixture clears module-level caches before each test to prevent cross-test cache hits poisoning `mock.fetch.call_args`
+- `api/pyproject.toml`: added `cachetools>=5.3` dependency
+
+**Thread safety note:** `cachetools.TTLCache` is not thread-safe. All cache reads/writes are protected with a `threading.Lock`. This matters because `anyio.to_thread.run_sync` runs Trino calls in a thread pool — without the lock, concurrent requests can corrupt the cache.
+
+### Poller-as-read-model (2026-05-17)
+
+The next architectural step was removing Trino entirely from the hot request path.
+
+**Before:** Every API request → TTL cache check → Trino query (on cache miss)
+**After:** Every API request → in-process `ReadModel` dict lookup (<1 µs). Trino is only called by the background poller on its refresh schedule.
+
+**`api/src/api/read_model.py`** — New module. `ReadModel` dataclass holds:
+- `spread: dict[str, SpreadResponse]` and `liquidity: dict[str, LiquidityResponse]` — keyed by uppercase symbol
+- `ohlcv: dict[str, OHLCVResponse]` — last 60 bars per symbol, newest-first
+- `pipeline: PipelineLagResponse | None`
+- `symbols: SymbolsResponse | None`
+- `ready: bool` — False until first full poll cycle completes
+
+**`poller.py`** — Full rewrite. Replaces the old single-query poller with four separate refresh functions, each called on its own cadence:
+- `_poll_liquidity` / `_poll_pipeline`: every 30 s, also update Prometheus gauges
+- `_poll_ohlcv`: every 60 s, single window-function query for ALL symbols
+- `_poll_symbols`: every 300 s (CDC data rarely changes)
+
+OHLCV SQL uses `ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY window_start DESC)` to get the 60 most-recent bars per symbol in one round trip, bounded to `WHERE window_start >= NOW() - INTERVAL '2' HOUR` to keep the scan cheap.
+
+**Endpoint routing:**
+- Spread / liquidity / pipeline / symbols: read from `ReadModel`, no Trino at all
+- OHLCV default (`limit ≤ 60`, no time filter): read from `ReadModel`, sub-millisecond
+- OHLCV historical (`from_ts` / `to_ts` set, or `limit > 60`): cold path to Trino, with `TTLCache(60 s)` so repeated analytical queries don't pound Trino
+
+**Cold-start (before first poll completes):** endpoints return `503 Service Warming Up`. The initial poll runs immediately in `run_poller()` via `asyncio.gather(return_exceptions=True)` — in practice the warm-up window is < 1 s on a healthy stack.
+
+**Thread-safety:** `ReadModel` fields are updated by swapping entire dicts (`_model.spread = new_dict`). Under CPython's GIL, dict reference assignment is atomic — request handlers either see the old dict or the new one, never a partial update. The `TTLCache` on the cold path still uses a `threading.Lock` as before.
+
+---
+
+## Load Test — Symbol Case Bug: spread/liquidity 100% 404 Despite Mart Having Data (2026-05-18)
+
+### Symptom
+
+After the ReadModel architecture was deployed (p(95)=3 ms confirmed), a second load test showed:
+- `spread 200` ↳ 0% (all 404)
+- `liquidity 200` ↳ 0% (all 404)
+- `ohlcv 200` ↳ 0% (all 404)
+
+Yet `mart_liquidity` had 5 rows and `poll_liquidity_ok symbols=5` appeared in the API logs.
+
+### Root cause 1 — Symbol case mismatch (spread + liquidity)
+
+`mart_liquidity` stores symbols in **lowercase** (`btcusdt`, `ethusdt`, …). The poller built the ReadModel dict with lowercase keys:
+
+```python
+sym = str(r["symbol"])          # "btcusdt"
+new_spread[sym] = ...           # keyed "btcusdt"
+```
+
+But the router looked up with `.upper()`:
+
+```python
+sym = symbol.upper()            # "BTCUSDT"
+model.spread.get(sym)           # None → 404
+```
+
+The unit tests passed because the test fixture directly populated the model with `"BTCUSDT"` (uppercase), matching what the router expected. The mismatch only appeared in production where the mart uses lowercase.
+
+**Fix:** `sym = str(r["symbol"]).upper()` in both `_poll_liquidity` and `_poll_ohlcv` in `poller.py`.
+
+**Rule:** Always normalize symbol keys to uppercase at the point where the ReadModel dict is built, not at the lookup site. That way, routers can use `.upper()` without coupling to the mart's storage convention.
+
+### Root cause 2 — mart_ohlcv empty (dbt timing)
+
+`mart_ohlcv` had 0 rows even though Flink was running. The cause:
+
+```
+make up
+  → flink-init submits Flink jobs (~30 s)
+  → dbt-runner runs dbt IMMEDIATELY after flink-init exits
+      At this point Flink has not completed a single checkpoint.
+      normalized.ohlcv_1m is empty → mart_ohlcv is empty.
+  → api starts, poller polls → poll_ohlcv_ok symbols=0
+```
+
+Docker Compose `depends_on: service_completed_successfully` only waits for the service to *exit*, not for the system it triggered to *produce data*. The dbt-runner exits before Flink writes its first row.
+
+**Fix:** After `make up`, wait ~60 s for Flink to checkpoint, then run `make dbt-run` manually. The `make load-test-full` target automates this:
+
+1. Waits until 2 Flink jobs are `RUNNING`
+2. Waits until `normalized.book_ticker` has rows (proxy for first checkpoint)
+3. Runs `dbt run`
+4. Verifies `mart_liquidity` has rows
+5. Runs k6
+
+**Rule:** Never assume `dbt-runner` produced fresh marts. It runs once at startup under ideal conditions (stack just started, no data yet). For any load test or manual verification, run `make dbt-run` after the pipeline has been flowing for at least one minute.

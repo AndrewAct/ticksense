@@ -310,7 +310,12 @@ ingest/    Binance WebSocket ingestion → Kafka
     client.py       Async WS client, reconnect, backoff
     main.py         Entry point: asyncio.gather over symbols
 
-api/       FastAPI query layer over Trino
+api/       FastAPI query layer over Trino + Iceberg
+  src/api/
+    read_model.py   in-process ReadModel (hot-path data, no Trino on reads)
+    poller.py       background task: refreshes ReadModel every 30–60 s
+    routers/        hot-path endpoints read model; cold-path (history) hits Trino
+    models/         Pydantic response models per domain
 replay/    Kafka offset replay producer
 flink/     PyFlink streaming jobs (Phase 2)
 airflow/   Orchestration DAGs (Phase 5)
