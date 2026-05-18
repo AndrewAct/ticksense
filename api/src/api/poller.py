@@ -82,7 +82,7 @@ async def _poll_liquidity(client: TrinoClient) -> None:
         new_liquidity: dict[str, LiquidityResponse] = {}
         for r in rows:
             sym = str(r["symbol"]).upper()
-            lbl = {"symbol": sym, "exchange": str(r["exchange"])}
+            lbl = {"symbol": str(r["symbol"]).lower(), "exchange": str(r["exchange"])}
             new_spread[sym] = SpreadResponse.model_validate(r)
             new_liquidity[sym] = LiquidityResponse.model_validate(r)
             MID_PRICE.labels(**lbl).set(r["mid_price"])
