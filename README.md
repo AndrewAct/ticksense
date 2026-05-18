@@ -362,5 +362,5 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full phase plan.
 | 2 — Flink Processing | ✅ | Normalize, dedup, OHLCV windows → Iceberg silver (e2e verified 2026-05-15) |
 | 3 — CDC + Replay | ✅ | Debezium CDC, Flink upsert job, replay CLI (e2e verified 2026-05-16) |
 | 4 — Analytics Layer | ✅ | dbt + Trino, FastAPI, Prometheus, Grafana (e2e verified 2026-05-16) |
-| 5 — Ops + Observability | — | Airflow, Great Expectations, SLA alerts |
+| 5 — Ops + Observability | ✅ | Airflow, Great Expectations, SLA alerts (load test: p(95)=10ms, 0% errors — 2026-05-18; Airflow/Spark pending E2E) |
 | 6 — Demo + Blog + Web | — | ticksense.ai, demo video, blog posts |
