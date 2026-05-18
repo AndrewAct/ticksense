@@ -33,10 +33,10 @@ from typing import Any
 
 from flink_lib.config import Config
 from flink_lib.kafka_schema import (
+    KAFKA_RECORD_TYPE,
     OFFSET_IDX,
     PARTITION_IDX,
     PAYLOAD_IDX,
-    KafkaRecordDeserializer,
 )
 from flink_lib.logic import (
     apply_depth_diff,
@@ -47,16 +47,12 @@ from flink_lib.logic import (
     compute_spread,
 )
 from flink_lib.sql_runner import add_inserts_from_file, execute_sql_file
-from pyflink.common import Row, WatermarkStrategy
+from pyflink.common import Row
 from pyflink.common.restart_strategy import RestartStrategies
 from pyflink.common.typeinfo import Types
 from pyflink.datastream import (
     CheckpointingMode,
     StreamExecutionEnvironment,
-)
-from pyflink.datastream.connectors.kafka import (
-    KafkaOffsetsInitializer,
-    KafkaSource,
 )
 from pyflink.datastream.functions import KeyedProcessFunction, RuntimeContext
 from pyflink.datastream.state import ValueStateDescriptor
@@ -285,24 +281,19 @@ def main() -> None:
     t_env = StreamTableEnvironment.create(env)
     t_env.get_config().set("table.exec.state.ttl", str(cfg.STATE_TTL_MS))
 
-    # ── DDL: catalog and sinks ────────────────────────────────────────────────
-    # Source is read directly via DataStream KafkaSource (avoids ARRAY type
-    # serialization issues with ARRAY<ARRAY<STRING>> in the Table→DataStream bridge).
+    # ── DDL: catalog, source, and sinks ──────────────────────────────────────
     execute_sql_file(t_env, SQL / "catalogs.sql", **cfg.as_dict())
+    execute_sql_file(t_env, SQL / "normalize" / "source_raw.sql", **cfg.as_dict())
     execute_sql_file(t_env, SQL / "normalize" / "sink_iceberg.sql")
     execute_sql_file(t_env, SQL / "normalize" / "sink_kafka.sql", **cfg.as_dict())
 
-    # ── DataStream Kafka source: raw JSON strings ─────────────────────────────
-    raw_stream = env.from_source(
-        KafkaSource.builder()
-        .set_bootstrap_servers(cfg.kafka_brokers)
-        .set_topics(cfg.TOPIC_RAW)
-        .set_group_id(cfg.GROUP_NORMALIZE)
-        .set_starting_offsets(KafkaOffsetsInitializer.earliest())
-        .set_deserializer(KafkaRecordDeserializer())
-        .build(),
-        WatermarkStrategy.no_watermarks(),
-        "raw-orderbook-source",
+    # ── DataStream Kafka source: raw payload + real partition/offset ──────────
+    # Bridged from the SQL source table so metadata columns (partition, offset)
+    # are populated by the Kafka connector without needing the unavailable
+    # KafkaRecordDeserializationSchema Python binding.
+    raw_stream = t_env.to_append_stream(
+        t_env.sql_query("SELECT payload, kafka_partition, kafka_offset FROM raw_orderbook_stream"),
+        KAFKA_RECORD_TYPE,
     )
 
     # ── Stateful DataStream processing ────────────────────────────────────────

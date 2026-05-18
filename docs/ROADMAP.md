@@ -239,11 +239,34 @@ GET /symbols                 active trading pairs from CDC symbol_config
 
 ---
 
-## Phase 5 — Ops + Observability
+## Phase 5 — Ops + Observability (partial ✅ — Airflow + Spark pending E2E)
 
-**Goal:** Airflow orchestration, data quality checks, freshness SLA alerts.
+**Goal:** Airflow orchestration, Spark backfill/compaction, data quality checks, freshness SLA alerts.
 
-### Airflow DAGs
+**Status (2026-05-17):** Code complete. Flink kafka-offset fix shipped and verified. Airflow and Spark implemented but not yet E2E tested against the live stack.
+
+### Kafka offset fix ✅
+
+The `kafka_partition` and `kafka_offset` columns were previously hardcoded to `-1` in `normalize.py` and `cdc_symbol_config.py` because the `KafkaRecordDeserializationSchema` class is not exposed in PyFlink 1.18 Python bindings, and `KafkaSourceBuilder.set_deserializer()` does not exist in Python.
+
+**Fix:** Replaced the DataStream `KafkaSource.builder()` approach with a Flink SQL Table API source using `METADATA FROM 'partition' VIRTUAL` and `METADATA FROM 'offset' VIRTUAL` columns. Real partition and offset are now stored in Iceberg. The `to_append_stream()` bridge works cleanly because the source schema uses only `STRING`, `INT`, and `BIGINT` — no complex types.
+
+Files changed: `flink_lib/kafka_schema.py` (removed `KafkaRecordDeserializer`), `normalize.py`, `cdc_symbol_config.py`, new `sql/normalize/source_raw.sql`, new `sql/cdc_symbol_config/source_bronze.sql`.
+
+See `docs/DEBUGGING_PHASE5.md` for full explanation including the `VIRTUAL` keyword semantics.
+
+### Docker `.dockerignore` ✅
+
+Added `.dockerignore` files to exclude `__pycache__` and `.pyc` files from all Docker build contexts. Host Python 3.13 bytecodes were previously being copied into Python 3.10 Flink containers (harmless but wasteful and confusing).
+
+- `flink/.dockerignore`: covers `flink-jobmanager`, `flink-taskmanager`, `flink-init`
+- `.dockerignore` (root): covers `ingest` and `api` (both use `context: .`)
+
+### lib namespace conflict fix ✅
+
+`flink/jobs/lib/` was renamed to `flink/jobs/flink_lib/` and `spark/jobs/lib/` to `spark/jobs/spark_lib/` to eliminate a Python namespace package collision when both service packages are on `sys.path`. The Phase 5 merge commit accidentally left `flink/jobs/lib/kafka_schema.py` undeleted — removed in the fix commit.
+
+### Airflow DAGs (implemented, pending E2E test)
 
 ```
 backfill_ohlcv_1m          Spark: recompute OHLCV for a date range (idempotent)
@@ -261,12 +284,24 @@ freshness_sla_check         Alert if any symbol > 35s stale
 - Row count within expected range per `(exchange, symbol, date)`
 - Freshness: `max(exchange_event_ts) > now() - 35s`
 
+### Spark jobs (implemented, pending E2E test)
+
+- `backfill_ohlcv.py`: recompute `normalized.ohlcv_1m` from bronze for a given date range
+- `compact_tables.py`: `rewrite_data_files` on Iceberg bronze + normalized tables
+
 **Deliverables:**
-- [ ] 6 Airflow DAGs, all idempotent, all with exponential-backoff retries
-- [ ] Spark compaction job for `normalized.book_ticker`
-- [ ] Great Expectations suite with checkpoint
-- [ ] Freshness alert fires when a symbol goes stale (can simulate by stopping ingest)
-- [ ] `make test` passes
+- [x] `flink_lib/kafka_schema.py`: real partition/offset via SQL metadata columns
+- [x] `normalize.py` + `cdc_symbol_config.py`: use `to_append_stream()` from SQL source
+- [x] `sql/normalize/source_raw.sql` + `sql/cdc_symbol_config/source_bronze.sql`
+- [x] `flink/.dockerignore` + root `.dockerignore`
+- [x] lib namespace conflict resolved (`flink_lib/`, `spark_lib/`)
+- [x] 6 Airflow DAGs (`airflow/dags/`)
+- [x] 2 Spark jobs (`spark/jobs/`)
+- [x] `airflow/tests/` + `spark/tests/` with unit tests; all pass in `make test`
+- [ ] Airflow DAGs E2E verified against live stack
+- [ ] Spark compaction job E2E verified (no conflict with live Flink writes)
+- [ ] `backfill_ohlcv_1m` idempotency verified (same date range → same row count)
+- [ ] Freshness alert fires when ingest is stopped
 
 **Done when:** Airflow UI shows all DAGs green on a nightly run.
 

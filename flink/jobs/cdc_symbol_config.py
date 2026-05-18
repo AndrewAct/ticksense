@@ -58,22 +58,18 @@ from pathlib import Path
 
 from flink_lib.config import Config
 from flink_lib.kafka_schema import (
+    KAFKA_RECORD_TYPE,
     OFFSET_IDX,
     PARTITION_IDX,
     PAYLOAD_IDX,
-    KafkaRecordDeserializer,
 )
 from flink_lib.sql_runner import add_inserts_from_file, execute_sql_file
-from pyflink.common import Row, WatermarkStrategy
+from pyflink.common import Row
 from pyflink.common.restart_strategy import RestartStrategies
 from pyflink.common.typeinfo import Types
 from pyflink.datastream import (
     CheckpointingMode,
     StreamExecutionEnvironment,
-)
-from pyflink.datastream.connectors.kafka import (
-    KafkaOffsetsInitializer,
-    KafkaSource,
 )
 from pyflink.datastream.functions import FlatMapFunction
 from pyflink.table import DataTypes, Schema, StreamTableEnvironment
@@ -264,18 +260,12 @@ def main() -> None:
     log.info("cdc_ddl source cdc_symbol_config_source (debezium-json) registered")
 
     # ── DataStream: bronze path (raw JSON → CdcEnvelopeProcessor) ────────────
-    # Uses a separate consumer group (flink-cdc-bronze) so it progresses
-    # independently from the Table API normalized path.
-    raw_stream = env.from_source(
-        KafkaSource.builder()
-        .set_bootstrap_servers(cfg.kafka_brokers)
-        .set_topics(cfg.TOPIC_CDC)
-        .set_group_id(cfg.GROUP_CDC_BRONZE)
-        .set_starting_offsets(KafkaOffsetsInitializer.earliest())
-        .set_deserializer(KafkaRecordDeserializer())
-        .build(),
-        WatermarkStrategy.no_watermarks(),
-        "cdc-raw-source",
+    # Separate consumer group from the normalized Table API path so both progress
+    # independently.  Bridged from the SQL source table to get real partition/offset.
+    execute_sql_file(t_env, SQL / "cdc_symbol_config" / "source_bronze.sql", **cfg.as_dict())
+    raw_stream = t_env.to_append_stream(
+        t_env.sql_query("SELECT payload, kafka_partition, kafka_offset FROM cdc_bronze_stream"),
+        KAFKA_RECORD_TYPE,
     )
     log.info(
         "cdc_source DataStream Kafka source created topic=%s group=%s",
