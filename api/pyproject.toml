@@ -2,6 +2,7 @@
 name = "ticksense-api"
 version = "0.1.0"
 description = "FastAPI query layer over Trino + Iceberg"
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

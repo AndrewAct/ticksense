@@ -2,6 +2,7 @@
 name = "ticksense-ingest"
 version = "0.1.0"
 description = "Binance L2 WebSocket ingestion into Kafka"
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.12"
 dependencies = [
     "websockets>=13.0",
