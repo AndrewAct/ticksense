@@ -6,6 +6,11 @@ Real-time crypto market lakehouse built end-to-end.
 
 ~5M ticks/day · 50 pairs · <30s end-to-end freshness · Postgres CDC via Debezium
 
+## License
+
+TickSense is licensed under the GNU Affero General Public License v3.0 only
+(`AGPL-3.0-only`). See [LICENSE](LICENSE) for the full license text.
+
 ## Architecture
 
 ```
