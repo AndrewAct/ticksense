@@ -52,5 +52,6 @@ docs/ARTICLES*.md
 docs/BLOG_IDEAS.md
 docs/SCRIPT*.md
 docs/VIDEO_SCRIPT.md
+docs/DOCKER_MODERNIZATION.md
 *.script.md
 content/
