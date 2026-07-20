@@ -364,6 +364,30 @@ Ideas:
 
 These are not on the critical path but worth revisiting as the ecosystem matures.
 
+### Repeatable Postgres schema migrations
+
+`infra/docker/postgres/init.sql` currently runs exactly once via the `postgres-init`
+compose service (`docker-entrypoint-initdb.d`), with no tracking of what's been applied.
+Fine as long as `symbol_config`'s schema never changes after first boot — but there's
+currently no safe way to add a column/table to it against an already-running instance
+without a manual `ALTER TABLE` or blowing away the `postgres-data` volume.
+
+**Pattern to borrow**: built this for an unrelated project's Postgres-backed feature
+(portfolio-website's `apps/database/neon.py`) — numbered `.sql` files applied by a small
+runner that tracks applied filenames in a `schema_migrations` table, guarded by
+`pg_advisory_xact_lock` so a concurrent second boot can't double-apply. No Alembic/ORM
+needed, just a ~30-line runner.
+
+**Migration steps (when ready):**
+1. Move `infra/docker/postgres/init.sql`'s contents into
+   `infra/docker/postgres/migrations/0001_initial_schema.sql`.
+2. Add a small runner that creates `schema_migrations`, checks which filenames are
+   already applied, and applies + records any new numbered file it finds.
+3. Wire it into `postgres-init` in place of the raw `psql -f init.sql` call.
+4. Verify idempotency: running the init step twice against an existing volume is a no-op.
+
+---
+
 ### Migrate from mypy to ty
 
 [ty](https://github.com/astral-sh/ty) is Astral's Rust-based type checker — the third piece of the ruff/uv/ty trilogy, significantly faster than mypy.
